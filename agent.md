@@ -95,20 +95,24 @@ docs/
 
 | 文档类型 | 放在哪里 | 谁写 | 纳入 git |
 |---|---|---|---|
-| 需求文档 | `docs/01-requirements/` | PRD subagent 产出 → 主 Agent 确认提升 | ✅ |
-| 架构/设计文档 | `docs/02-design/` | 架构师 subagent 产出 → 主 Agent 确认提升 | ✅ |
-| 技术调研 | `docs/02-design/research/` | 主 Agent 整合 | ✅ |
-| 开发规范 | `docs/03-development/` | 主 Agent | ✅ |
-| 质量报告 | `docs/04-quality/` | 各 subagent 产出 → 主 Agent 确认提升 | ✅ |
-| 交付文档 | `docs/05-delivery/` | 主 Agent（阶段交付时创建） | ✅ |
-| 管理文档 | `docs/06-management/` | 主 Agent | ✅ |
+| 需求文档 | `docs/01-requirements/` | PRD subagent 产出 → 主 Agent 确认提升 | ❌ 本地保留 |
+| 架构/设计文档 | `docs/02-design/` | 架构师 subagent 产出 → 主 Agent 确认提升 | ❌ 本地保留 |
+| 技术调研 | `docs/02-design/research/` | 主 Agent 整合 | ❌ 本地保留 |
+| 开发规范 | `docs/03-development/` | 主 Agent | ❌ 本地保留 |
+| 质量报告 | `docs/04-quality/` | 各 subagent 产出 → 主 Agent 确认提升 | ❌ 本地保留 |
+| 交付文档 | `docs/05-delivery/` | 主 Agent（阶段交付时创建） | ❌ 本地保留 |
+| 管理文档 | `docs/06-management/` | 主 Agent | ❌ 本地保留 |
+| 源码 | `src/`、`backend/`、`tests/` | 主 Agent | ✅ 提交 |
+| README.md | 项目根目录 | 主 Agent | ✅ 提交 |
 | subagent 临时产出 | `_scratch/` | 各 subagent 直接写 | ❌ gitignore |
 | 归档旧文档 | `_archive/` | 主 Agent | ❌ gitignore |
 | 项目记忆 | `.workbuddy/memory/` | 系统/主 Agent | ❌ 非正式文档 |
-| Hook 脚本 | `.codebuddy/hooks/` | 主 Agent | ✅ |
+| Hook 脚本 | `.codebuddy/hooks/` | 主 Agent | ✅ 提交 |
 | QA 标记文件 | `.codebuddy/*.flag` | 各 subagent | ❌ gitignore |
 | 环境变量 | `.env` | 主 Agent | ❌ gitignore |
-| 环境变量模板 | `.env.example` | 主 Agent | ✅ |
+| 环境变量模板 | `.env.example` | 主 Agent | ✅ 提交 |
+
+**git 提交原则：只有代码和 README.md 提交，docs/ 项目文档本地保留不提交。**
 
 ### 文档提升流程
 ```
