@@ -1,0 +1,208 @@
+# ============================================
+# 前端 (React 18 + Vite + TypeScript)
+# ============================================
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+.next/
+out/
+
+# Vite 缓存
+.vite/
+*.tsbuildinfo
+
+# 本地环境覆盖
+*.local
+
+# 测试覆盖率
+coverage/
+
+# ESLint 缓存
+.eslintcache
+
+# 包管理器日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 包管理器锁文件（按需保留其一，此处不忽略）
+
+# ============================================
+# 后端 Python (FastAPI + SQLAlchemy + SQLite)
+# ============================================
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# 字节码与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# 分发包与元数据
+*.egg-info/
+*.egg
+build/
+dist/
+develop-eggs/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+
+# 环境变量与密钥
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# 数据库文件（SQLite）
+app.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 类型检查缓存
+.mypy_cache/
+.pyre/
+.pytype/
+
+# ============================================
+# WorkBuddy / CodeBuddy
+# ============================================
+# QA-PASS 标记文件（自动生成，不提交）
+.codebuddy/code-review-pass.flag
+.codebuddy/test-pass.flag
+.codebuddy/*.flag
+
+# 日志目录（自动生成，不提交）
+.codebuddy/logs/
+
+# 注意：.codebuddy/hooks/ 下的脚本和说明文档需要提交，不要忽略
+# 注意：.codebuddy/qa-pass 机制说明.md 需要提交，不要忽略
+
+# ============================================
+# 系统文件
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# ============================================
+# IDE / 编辑器
+# ============================================
+# JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code（全部忽略）
+.vscode/
+.history/
+
+# Vim
+*.swp
+*.swo
+*.swn
+Session.vim
+.netrwhbook
+
+# Sublime / Emacs
+*.sublime-workspace
+*.sublime-project
+\#*\#
+.\#*
+
+# ============================================
+# 通用临时文件
+# ============================================
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+
+# ============================================
+# 项目临时产出与归档
+# ============================================
+# subagent 临时产出，不提交
+_scratch/
+
+# 归档旧文档，不提交
+_archive/
+
+# ============================================
+# 素材目录（保留目录结构，忽略大型二进制）
+# ============================================
+# 视频文件
+materials/**/*.mp4
+materials/**/*.mov
+materials/**/*.avi
+materials/**/*.mkv
+materials/**/*.flv
+materials/**/*.wmv
+materials/**/*.webm
+materials/**/*.m4v
+materials/**/*.mpg
+materials/**/*.mpeg
+
+# 音频文件
+materials/**/*.mp3
+materials/**/*.wav
+materials/**/*.flac
+materials/**/*.aac
+materials/**/*.ogg
+materials/**/*.m4a
+
+# 大型图片与压缩包
+materials/**/*.zip
+materials/**/*.rar
+materials/**/*.7z
+materials/**/*.tar
+materials/**/*.gz
+
+# PDF 等大型文档素材
+materials/**/*.pdf
+
+# 保留目录结构
+!materials/**/.gitkeep
+!materials/.gitkeep
