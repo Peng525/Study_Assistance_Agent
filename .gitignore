@@ -99,8 +99,8 @@ app.db
 # 日志目录（自动生成，不提交）
 .codebuddy/logs/
 
-# 注意：.codebuddy/hooks/ 下的脚本和说明文档需要提交，不要忽略
-# 注意：.codebuddy/qa-pass 机制说明.md 需要提交，不要忽略
+# 注意：.codebuddy/hooks/ 下的 hook 脚本（.sh/.py）需要提交，不要忽略
+# 注意：QA-PASS 机制说明已迁至 docs/06-management/qa-pass机制说明.md
 
 # ============================================
 # 系统文件
