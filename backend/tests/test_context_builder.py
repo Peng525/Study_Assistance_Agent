@@ -51,10 +51,32 @@ def test_split_chapters():
 
 def test_filter_courseware_with_chapters():
     md = "# 1\nA\n# 2\nB\n# 3\nC\n# 4\nD\n# 5\nE"
+    # 无时间戳 → 无法定位章节，回退全文（PRD 7.1）
     filtered = filter_courseware(md, has_chapters=True, max_chapters=3)
+    assert "A" in filtered
+    assert "E" in filtered
+
+
+def test_filter_courseware_map_by_time():
+    md = "# 1\nA\n# 2\nB\n# 3\nC\n# 4\nD\n# 5\nE"
+    # 选中 10s，总时长 100s → 比例 0.1 → 映射到第 0 章（第一章无前章，取第1~2章）
+    filtered = filter_courseware(md, has_chapters=True, start_time=10, video_duration=100)
+    assert "A" in filtered  # 第1章
+    assert "B" in filtered  # 第2章
+    assert "C" not in filtered  # 第3章及之后不在窗口
     assert "D" not in filtered
     assert "E" not in filtered
-    assert "A" in filtered
+
+
+def test_filter_courseware_map_by_time_middle():
+    md = "# 1\nA\n# 2\nB\n# 3\nC\n# 4\nD\n# 5\nE"
+    # 选中 50s，总时长 100s → 比例 0.5 → 映射到第 2 章（第1~3章，即 B/C/D）
+    filtered = filter_courseware(md, has_chapters=True, start_time=50, video_duration=100)
+    assert "B" in filtered
+    assert "C" in filtered
+    assert "D" in filtered
+    assert "A" not in filtered
+    assert "E" not in filtered
 
 
 def test_filter_courseware_no_chapters_full_text():

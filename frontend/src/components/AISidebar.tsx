@@ -156,7 +156,9 @@ export default function AISidebar({
         </Button>
       </div>
 
-      <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+      <div
+        ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 16 }}
+      >
         {messages.length === 0 ? (
           <Empty description="选中字幕右键提问，或直接输入问题" />
         ) : (
@@ -188,6 +190,18 @@ export default function AISidebar({
         {historyNotice && (
           <div style={{ fontSize: 12, color: "var(--text-secondary)", textAlign: "center" }}>
             {historyNotice}
+          </div>
+        )}
+        {messages.filter((m) => m.role === "user").length >= 5 && (
+          <div
+            style={{
+              fontSize: 12,
+              color: "#fa8c16",
+              textAlign: "center",
+              marginTop: 8,
+            }}
+          >
+            已超过 5 轮，建议清空会话重新开始
           </div>
         )}
       </div>

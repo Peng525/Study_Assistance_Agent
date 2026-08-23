@@ -46,26 +46,48 @@ async def upload(
         allowed = "/".join(sorted(cfg["exts"]))
         raise HTTPException(status_code=400, detail=f"仅支持 {allowed} 格式")
 
-    # 读文件内容（分块，限流）
-    content = await file.read()
+    # 流式写入临时文件，避免一次性 read 全量进内存（大视频风险）
+    dest = storage.target_path(course_id, file_type, original_filename)
+    tmp_path = dest.with_suffix(dest.suffix + ".part")
     max_bytes = cfg["max_bytes"]
-    if len(content) > max_bytes:
-        raise HTTPException(status_code=400, detail=f"{cfg['label']}文件过大，上限 {max_bytes // 1024 // 1024}MB")
+    head = b""
+    total = 0
+    try:
+        with open(tmp_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1MB 分块
+                if not chunk:
+                    break
+                if not head:
+                    head = chunk[:16]
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{cfg['label']}文件过大，上限 {max_bytes // 1024 // 1024}MB",
+                    )
+                out.write(chunk)
 
-    # magic number 校验
-    head = content[:16]
-    if storage.validate_magic(file_type, f".{ext}", head):
-        raise HTTPException(status_code=400, detail="文件内容与扩展名不符")
+        # magic number 校验
+        if storage.validate_magic(file_type, f".{ext}", head):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不符")
 
-    # 字幕格式额外校验
-    if file_type == "subtitle":
-        text_sample = content[:4096].decode("utf-8", errors="ignore")
-        unsupported = detect_unsupported_format(text_sample)
-        if unsupported:
-            raise HTTPException(status_code=400, detail=unsupported)
+        # 字幕格式额外校验（只读前 4KB）
+        if file_type == "subtitle":
+            with open(tmp_path, "rb") as f:
+                sample = f.read(4096).decode("utf-8", errors="ignore")
+            unsupported = detect_unsupported_format(sample)
+            if unsupported:
+                raise HTTPException(status_code=400, detail=unsupported)
 
-    # 保存文件
-    dest = storage.save_upload(course_id, file_type, original_filename, content)
+        # 校验通过，move 到目标
+        tmp_path.replace(dest)
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     # 更新或创建 materials 记录
     material = db.query(Material).filter(Material.course_id == course_id).first()
@@ -240,7 +262,7 @@ def _rescan_material(db: Session, material: Material) -> None:
         material.status = "ready"
         material.error_message = None
 
-    # 字幕处理：srt 转 vtt；无字幕则待 Whisper 生成
+    # 字幕处理：srt 转 vtt；无字幕则自动触发 Whisper 生成
     if material.subtitle_path:
         sub_path = Path(material.subtitle_path)
         if material.subtitle_source_format == "srt":
@@ -254,9 +276,17 @@ def _rescan_material(db: Session, material: Material) -> None:
         material.subtitle_source = "manual"
         material.subtitle_error = None
     else:
+        # 无字幕：自动触发 Whisper（A6 AC6：视频无字幕时自动生成）
         material.subtitle_status = "pending"
-        material.subtitle_source = None
+        material.subtitle_source = "whisper"
         material.subtitle_error = None
+        if material.video_path and whisper_service.is_ffmpeg_available():
+            whisper_service.enqueue(material.course_id, material.video_path)
+            material.subtitle_status = "generating"
+        elif material.video_path and not whisper_service.is_ffmpeg_available():
+            material.subtitle_error = "未检测到 ffmpeg，无法自动生成字幕，请安装后手动触发"
+        else:
+            material.subtitle_status = "pending"
 
     # 课件提取
     if material.courseware_path:

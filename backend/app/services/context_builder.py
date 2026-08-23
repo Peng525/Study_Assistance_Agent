@@ -91,12 +91,37 @@ def split_chapters(text: str) -> list[str]:
     return chapters if chapters else [text]
 
 
-def filter_courseware(text: str, has_chapters: bool, max_chapters: int = 3) -> str:
-    """课件粗筛：有章节取前 N 章，无章节全文。"""
+def filter_courseware(
+    text: str,
+    has_chapters: bool,
+    max_chapters: int = 3,
+    *,
+    start_time: float | None = None,
+    video_duration: float | None = None,
+) -> str:
+    """课件粗筛：取选中字幕所在章节 ±1 章（共 3 章）。
+
+    - 无章节：全文
+    - 有章节但无法定位（缺时间戳/时长）：回退全文
+    - 有章节且能定位：按 `start_time / video_duration` 比例映射到章节，
+      取该章节及前后各 1 章
+    """
     if not has_chapters:
         return text
     chapters = split_chapters(text)
-    return "\n\n".join(chapters[:max_chapters])
+    if len(chapters) <= max_chapters:
+        return text
+
+    # 无法定位选中字幕所属章节 → 回退全文（PRD 7.1）
+    if start_time is None or not video_duration or video_duration <= 0:
+        return text
+
+    ratio = start_time / video_duration
+    center = int(ratio * len(chapters))
+    center = max(0, min(len(chapters) - 1, center))
+    lo = max(0, center - 1)
+    hi = min(len(chapters), center + 2)  # 共 3 章：center-1, center, center+1
+    return "\n\n".join(chapters[lo:hi])
 
 
 def _build_base_messages(courseware_text: str, transcript: str, selected: str, question: str) -> list[dict]:
@@ -123,14 +148,21 @@ def build_context(
     selected_subtitle: str = "",
     question: str = "",
     history: list[dict] | None = None,
+    start_time: float | None = None,
+    video_duration: float | None = None,
 ) -> tuple[list[dict], str]:
     """构造完整 messages。返回 (messages, 提示信息)。
 
     history: 最近 N 轮的 [{role, content}]（不含 system）。
     提示信息：空串表示正常，否则为给用户看的降级提示。
     """
-    # 课件粗筛
-    courseware = filter_courseware(courseware_text, courseware_has_chapters)
+    # 课件粗筛（按选中字幕时间戳映射章节）
+    courseware = filter_courseware(
+        courseware_text,
+        courseware_has_chapters,
+        start_time=start_time,
+        video_duration=video_duration,
+    )
 
     base = _build_base_messages(courseware, transcript, selected_subtitle, question)
 

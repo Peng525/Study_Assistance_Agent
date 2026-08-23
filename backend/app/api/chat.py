@@ -40,6 +40,7 @@ async def chat_stream(
     courseware_text = ""
     courseware_has_chapters = False
     transcript = ""
+    video_duration = None
     if body.course_id:
         material = db.query(Material).filter(Material.course_id == body.course_id).first()
         if material:
@@ -50,6 +51,9 @@ async def chat_stream(
                     vtt_text = Path(material.subtitle_path).read_text(encoding="utf-8")
                     cues = parse_vtt_cues(vtt_text)
                     transcript = extract_time_window(cues, body.start_time)
+                    # 视频时长 ≈ 字幕最后一条 cue 的 end 时间
+                    if cues:
+                        video_duration = max(c["end"] for c in cues)
                 except Exception:
                     transcript = ""
 
@@ -70,6 +74,8 @@ async def chat_stream(
         selected_subtitle=body.selected_subtitle,
         question=body.user_question,
         history=history,
+        start_time=body.start_time,
+        video_duration=video_duration,
     )
     if not messages:
         # Token 超限拒绝

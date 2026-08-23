@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Col, Row, Skeleton, Tabs, Typography } from "antd";
+import { Button, Card, Col, Progress, Row, Skeleton, Tabs, Typography } from "antd";
 import { PlayCircleOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import TopNav from "../components/TopNav";
 import CourseCard, { CourseCardData } from "../components/CourseCard";
 import { api } from "../api/client";
+import { latestProgress, loadAll, loadProgress } from "../store/progress";
 
 export default function Home() {
   const [courses, setCourses] = useState<CourseCardData[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const latest = latestProgress();
 
   useEffect(() => {
     api
@@ -19,6 +21,16 @@ export default function Home() {
   }, []);
 
   const videoCourses = courses; // Phase 0 全部为视频课程
+  const continueCourse = latest
+    ? courses.find((c) => c.course_id === latest.courseId) || courses[0]
+    : courses[0];
+  const continuePct =
+    latest && continueCourse?.duration
+      ? Math.min(100, Math.round((latest.time / continueCourse.duration) * 100))
+      : 0;
+  // 学习轨迹：有进度记录的课程
+  const progressRecords = loadAll();
+  const learnedCourses = courses.filter((c) => progressRecords[c.course_id]);
 
   return (
     <div style={{ minHeight: "100%", background: "var(--bg)" }}>
@@ -39,17 +51,25 @@ export default function Home() {
                 继续你的学习之旅
               </Typography.Title>
               <Typography.Text style={{ color: "rgba(255,255,255,0.85)" }}>
-                上次学习进度已保存，从上次的位置继续
+                {latest
+                  ? `上次学习：${latest.courseId}（已学 ${Math.floor(latest.time / 60)} 分钟）`
+                  : "选择一门课程开始学习"}
               </Typography.Text>
             </Col>
-            <Col>
+            <Col style={{ textAlign: "center" }}>
               <Button
                 size="large"
                 icon={<PlayCircleOutlined />}
-                onClick={() => courses[0] && navigate(`/course/${courses[0].course_id}`)}
+                onClick={() => continueCourse && navigate(`/course/${continueCourse.course_id}`)}
+                disabled={!continueCourse}
               >
                 继续学习
               </Button>
+              {latest && continueCourse?.duration ? (
+                <div style={{ fontSize: 12, marginTop: 8 }}>
+                  进度 {continuePct}%
+                </div>
+              ) : null}
             </Col>
           </Row>
         </Card>
@@ -78,9 +98,33 @@ export default function Home() {
 
         {/* 学习轨迹 */}
         <Card style={{ marginTop: 24 }} title="学习轨迹">
-          <Typography.Text type="secondary">
-            本周学习时长统计与继续学习入口（Phase 0 占位）
-          </Typography.Text>
+          {learnedCourses.length === 0 ? (
+            <Typography.Text type="secondary">还没有学习记录，开始第一门课程吧</Typography.Text>
+          ) : (
+            learnedCourses.map((c) => {
+              const rec = loadProgress(c.course_id)!;
+              const pct = c.duration
+                ? Math.min(100, Math.round((rec.time / c.duration) * 100))
+                : 0;
+              return (
+                <Row
+                  key={c.course_id}
+                  align="middle"
+                  style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}
+                >
+                  <Col span={6}>
+                    <a onClick={() => navigate(`/course/${c.course_id}`)}>{c.title || c.course_id}</a>
+                  </Col>
+                  <Col span={16}>
+                    <Progress percent={pct} size="small" />
+                  </Col>
+                  <Col span={2} style={{ textAlign: "right", fontSize: 12 }}>
+                    {Math.floor(rec.time / 60)} 分钟
+                  </Col>
+                </Row>
+              );
+            })
+          )}
         </Card>
       </div>
     </div>

@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ConfigProvider, theme as antdTheme } from "antd";
 import { useAuthStore } from "./store/auth";
-import { resolveTheme, useThemeStore } from "./store/theme";import Login from "./pages/Login";
+import { resolveTheme, useThemeStore } from "./store/theme";
+import Login from "./pages/Login";
 import Home from "./pages/Home";
 import CourseList from "./pages/CourseList";
 import Player from "./pages/Player";
@@ -29,6 +30,15 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
 export default function App() {
   const mode = useThemeStore((s) => s.mode);
   const resolved = resolveTheme(mode);
+  // 系统跟随模式：监听 OS 主题变化实时响应（U9 AC3）
+  const [, forceUpdate] = useState(0);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => forceUpdate((n) => n + 1);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", resolved);

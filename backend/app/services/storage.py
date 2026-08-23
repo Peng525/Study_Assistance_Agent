@@ -68,14 +68,32 @@ def validate_magic(file_type: str, ext: str, head: bytes) -> str | None:
 
 
 def save_upload(course_id: str, file_type: str, original_filename: str, content: bytes) -> Path:
-    """保存上传文件，返回磁盘路径。使用 uuid 重命名避免覆盖与路径冲突。"""
+    """保存上传文件（内存版，用于小文件/测试），返回磁盘路径。覆盖同类型旧文件。"""
     ext = Path(original_filename).suffix.lower()
     course_dir = _course_dir(course_id)
     course_dir.mkdir(parents=True, exist_ok=True)
+    _remove_type_files(course_dir, file_type, ext)
     stored_name = f"{file_type}_{uuid.uuid4().hex[:8]}{ext}"
     dest = course_dir / stored_name
     dest.write_bytes(content)
     return dest
+
+
+def target_path(course_id: str, file_type: str, original_filename: str) -> Path:
+    """生成上传目标路径（uuid 重命名，不落盘），并预清理同类型旧文件。"""
+    ext = Path(original_filename).suffix.lower()
+    course_dir = _course_dir(course_id)
+    course_dir.mkdir(parents=True, exist_ok=True)
+    _remove_type_files(course_dir, file_type, ext)
+    stored_name = f"{file_type}_{uuid.uuid4().hex[:8]}{ext}"
+    return course_dir / stored_name
+
+
+def _remove_type_files(course_dir: Path, file_type: str, ext: str) -> None:
+    """删除课程目录下同类型旧文件（覆盖语义，避免文件累积）。"""
+    for f in course_dir.iterdir():
+        if f.is_file() and f.name.startswith(f"{file_type}_") and f.suffix.lower() == ext:
+            f.unlink(missing_ok=True)
 
 
 def list_course_files(course_id: str) -> list[dict]:

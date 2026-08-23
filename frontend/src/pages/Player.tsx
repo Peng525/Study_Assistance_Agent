@@ -8,6 +8,7 @@ import TopNav from "../components/TopNav";
 import SubtitleOverlay, { Cue, parseVTT } from "../components/SubtitleOverlay";
 import AISidebar from "../components/AISidebar";
 import { getToken } from "../store/auth";
+import { loadProgress, saveProgress } from "../store/progress";
 
 // 右键菜单状态
 interface MenuState {
@@ -84,13 +85,27 @@ export default function Player() {
       .then((blob) => {
         blobUrl = URL.createObjectURL(blob);
         art.switchUrl("/api/materials/" + courseId + "/video");
-        art.on("ready", () => setLoading(false));
+        art.on("ready", () => {
+          setLoading(false);
+          // 恢复上次学习进度
+          const saved = loadProgress(courseId);
+          if (saved && saved.time > 1) {
+            art.seek = saved.time;
+          }
+        });
       })
       .catch(() => setLoading(false));
 
     artRef.current = art;
+    // 记录学习进度（节流：每 3 秒写一次）
+    let lastSave = 0;
     art.on("video:timeupdate", () => {
       setCurrentTime(art.currentTime);
+      const now = Date.now();
+      if (now - lastSave > 3000) {
+        lastSave = now;
+        saveProgress(courseId, art.currentTime);
+      }
     });
     setLoading(false);
 
