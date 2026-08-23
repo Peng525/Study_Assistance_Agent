@@ -12,6 +12,7 @@ import AdminDashboard from "./pages/admin/Dashboard";
 import AdminModelConfigs from "./pages/admin/ModelConfigs";
 import AdminMaterials from "./pages/admin/Materials";
 import AdminUsers from "./pages/admin/Users";
+import AdminRedirectIfNeeded from "./components/AdminRedirectIfNeeded";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -60,7 +61,9 @@ export default function App() {
           path="/"
           element={
             <RequireAuth>
-              <Home />
+              <AdminRedirectIfNeeded>
+                <Home />
+              </AdminRedirectIfNeeded>
             </RequireAuth>
           }
         />
@@ -68,7 +71,9 @@ export default function App() {
           path="/courses"
           element={
             <RequireAuth>
-              <CourseList />
+              <AdminRedirectIfNeeded>
+                <CourseList />
+              </AdminRedirectIfNeeded>
             </RequireAuth>
           }
         />
@@ -76,7 +81,9 @@ export default function App() {
           path="/course/:courseId"
           element={
             <RequireAuth>
-              <Player />
+              <AdminRedirectIfNeeded>
+                <Player />
+              </AdminRedirectIfNeeded>
             </RequireAuth>
           }
         />

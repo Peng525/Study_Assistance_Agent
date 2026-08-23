@@ -16,7 +16,8 @@ export default function Login() {
       const resp = await api.post("/auth/login", values);
       login(resp.data.access_token, resp.data.user);
       message.success("登录成功");
-      navigate("/");
+      // 按角色直跳：admin → 管理后台，user → 学习端首页
+      navigate(resp.data.user.role === "admin" ? "/admin" : "/");
     } catch (e: any) {
       message.error(e.response?.data?.detail || "登录失败，请检查用户名或密码");
     } finally {
