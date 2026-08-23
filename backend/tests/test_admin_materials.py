@@ -1,0 +1,125 @@
+"""模块 2.1/2.2/2.5 素材上传/列表/删除/扫描测试。"""
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.api.admin_materials import router as materials_router
+from app.core.database import get_db
+from app.core.security import create_access_token, hash_password
+from app.models.models import Material, User
+from app.services import storage
+
+
+@pytest.fixture()
+def client(db_session, tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "_materials_root", lambda: tmp_path)
+
+    admin = User(username="admin", password_hash=hash_password("123456"), role="admin")
+    user = User(username="user25", password_hash=hash_password("123456"), role="user")
+    db_session.add_all([admin, user])
+    db_session.commit()
+
+    def _get_db_override():
+        yield db_session
+
+    app = FastAPI()
+    app.include_router(materials_router)
+    app.dependency_overrides[get_db] = _get_db_override
+    return TestClient(app)
+
+
+def _h():
+    return {"Authorization": f"Bearer {create_access_token(1, 'admin', 'admin')}"}
+
+
+def test_upload_video_success(client):
+    resp = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "video"},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")},
+        headers=_h(),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["course_id"] == "c1"
+
+
+def test_upload_wrong_extension(client):
+    resp = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "video"},
+        files={"file": ("v.avi", b"whatever", "video/x-msvideo")},
+        headers=_h(),
+    )
+    assert resp.status_code == 400
+    assert "仅支持" in resp.json()["detail"]
+
+
+def test_upload_magic_mismatch(client):
+    resp = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "video"},
+        files={"file": ("v.mp4", b"not a real mp4 at all", "video/mp4")},
+        headers=_h(),
+    )
+    assert resp.status_code == 400
+    assert "不符" in resp.json()["detail"]
+
+
+def test_upload_reject_unsupported_subtitle(client):
+    resp = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "subtitle"},
+        files={"file": ("s.srt", b"[Script Info]\nTitle: x\n[Events]\n", "text/plain")},
+        headers=_h(),
+    )
+    assert resp.status_code == 400
+    assert "ASS/SSA" in resp.json()["detail"]
+
+
+def test_upload_requires_admin(client):
+    token = create_access_token(2, "user25", "user")
+    resp = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "video"},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftyp", "video/mp4")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_list_files(client):
+    client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "video"},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42", "video/mp4")},
+        headers=_h(),
+    )
+    resp = client.get("/api/admin/materials/c1/files", headers=_h())
+    assert resp.status_code == 200
+    assert len(resp.json()["files"]) == 1
+
+
+def test_delete_file(client):
+    client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "c1", "file_type": "video"},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42", "video/mp4")},
+        headers=_h(),
+    )
+    resp = client.delete("/api/admin/materials/c1/files/video", headers=_h())
+    assert resp.status_code == 200
+    resp2 = client.get("/api/admin/materials/c1/files", headers=_h())
+    assert resp2.json()["files"] == []
+
+
+def test_scan_no_video_marks_error(client, tmp_path, db_session):
+    # 只放课件，不放视频 → 扫描后 status=error
+    (tmp_path / "c2").mkdir()
+    (tmp_path / "c2" / "course.md").write_text("# 标题\n内容", encoding="utf-8")
+    resp = client.post("/api/admin/materials/scan", headers=_h())
+    assert resp.status_code == 200
+    m = db_session.query(Material).filter(Material.course_id == "c2").first()
+    assert m is not None
+    assert m.status == "error"
+    assert "缺少视频" in m.error_message

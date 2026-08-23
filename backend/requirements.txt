@@ -5,6 +5,7 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
+python-multipart==0.0.20
 
 # 模块 0.3 数据库
 sqlalchemy==2.0.36

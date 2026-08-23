@@ -1,11 +1,22 @@
 """FastAPI 应用入口。"""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.seed import init_db
 
-app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时建表 + seed 预置账号。"""
+    init_db()
+    yield
+
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 
 # CORS 配置（从 settings 读取，本地开发前后端同源代理）
 app.add_middleware(
@@ -15,6 +26,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册路由
+from app.api import auth, admin_users, admin_materials, admin_model_configs, chat, materials  # noqa: E402
+
+app.include_router(auth.router)
+app.include_router(admin_users.router)
+app.include_router(admin_materials.router)
+app.include_router(admin_model_configs.router)
+app.include_router(chat.router)
+app.include_router(materials.router)
 
 
 @app.get("/health", tags=["system"])

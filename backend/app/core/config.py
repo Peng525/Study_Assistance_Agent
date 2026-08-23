@@ -8,7 +8,8 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录（backend/ 的上一级），.env 位于根目录
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# config.py 位于 backend/app/core/，向上 4 级到根目录
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -42,6 +43,9 @@ class Settings(BaseSettings):
     # JWT（生产环境必须通过 .env 覆盖为随机长字符串）
     jwt_secret: str = ""
     jwt_ttl_seconds: int = 3600  # 1 小时
+
+    # API Key 加密密钥（AES-GCM，独立于 JWT）
+    app_secret: str = ""
 
     # 数据库
     database_url: str = "sqlite:///./app.db"
