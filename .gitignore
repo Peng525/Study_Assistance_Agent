@@ -13,6 +13,7 @@ out/
 # Vite 缓存
 .vite/
 *.tsbuildinfo
+*.timestamp-*.mjs
 
 # 本地环境覆盖
 *.local
