@@ -13,6 +13,7 @@ from app.models.models import Material, User
 from app.services import storage
 from app.services import whisper_service
 from app.services.courseware import extract_courseware
+from app.services.project_context import bind_material
 from app.services.subtitle import detect_unsupported_format, srt_to_vtt
 
 router = APIRouter(prefix="/api/admin/materials", tags=["admin-materials"])
@@ -29,11 +30,17 @@ async def upload(
     course_id: str,
     file_type: str,
     file: UploadFile,
+    course_type: str = "theory",
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if file_type not in storage.FILE_TYPES:
         raise HTTPException(status_code=400, detail="未知文件类型")
+    if file_type == "video" and course_type not in {"theory", "practice"}:
+        raise HTTPException(status_code=400, detail="课程类型仅支持 theory 或 practice")
+    course_id_error = storage.validate_course_id(course_id)
+    if course_id_error:
+        raise HTTPException(status_code=400, detail=course_id_error)
 
     original_filename = file.filename or ""
     err = storage.validate_filename(original_filename)
@@ -100,12 +107,16 @@ async def upload(
 
     # 上传后自动 rescan 刷新缓存
     _rescan_material(db, material)
+    if file_type == "video":
+        bind_material(db, material, course_type=course_type)
+        db.commit()
 
     return {
         "message": f"{cfg['label']}上传成功",
         "filename": original_filename,
         "path": str(dest),
         "course_id": course_id,
+        "course_type": course_type if file_type == "video" else None,
     }
 
 
@@ -309,4 +320,6 @@ def _rescan_material(db: Session, material: Material) -> None:
 
     material.scanned_at = datetime.now(timezone.utc)
     db.add(material)
+    db.flush()
+    bind_material(db, material)
     db.commit()

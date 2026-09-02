@@ -24,6 +24,7 @@ interface MaterialRow {
   error_message?: string | null;
   courseware_format?: string | null;
   subtitle_status?: string;
+  course_type?: "theory" | "practice" | null;
 }
 
 const FILE_TYPES = [
@@ -40,6 +41,7 @@ export default function Materials() {
   const [fileList, setFileList] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const uploadFileType = Form.useWatch("file_type", uploadForm);
 
   const load = () => {
     setLoading(true);
@@ -52,18 +54,27 @@ export default function Materials() {
   useEffect(load, []);
 
   // 上传文件（带进度条）
-  const uploadFile = async (courseId: string, fileType: string, file: File) => {
+  const uploadFile = async (
+    courseId: string,
+    fileType: string,
+    file: File,
+    courseType: "theory" | "practice" = "theory",
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
     setUploading(true);
     setProgress(0);
     try {
-      await api.post(`/admin/materials/upload?course_id=${courseId}&file_type=${fileType}`, fd, {
+      await api.post(
+        `/admin/materials/upload?course_id=${encodeURIComponent(courseId)}&file_type=${fileType}&course_type=${courseType}`,
+        fd,
+        {
         headers: { "Content-Type": "multipart/form-data" },
         onUploadProgress: (e) => {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
         },
-      });
+        },
+      );
       message.success("上传成功");
       load();
       return true;
@@ -77,13 +88,13 @@ export default function Materials() {
   };
 
   const doUpload = async () => {
-    const { course_id, file_type } = await uploadForm.validateFields();
+    const { course_id, file_type, course_type } = await uploadForm.validateFields();
     const file = fileList[0]?.originFileObj || fileList[0];
     if (!file) {
       message.warning("请选择文件");
       return;
     }
-    const ok = await uploadFile(course_id, file_type, file);
+    const ok = await uploadFile(course_id, file_type, file, course_type || "theory");
     if (ok) {
       setUploadOpen(false);
       setFileList([]);
@@ -108,7 +119,13 @@ export default function Materials() {
       message.warning("请选择文件");
       return;
     }
-    const ok = await uploadFile(reupload.courseId, reupload.fileType, file);
+    const currentType = list.find((item) => item.course_id === reupload.courseId)?.course_type;
+    const ok = await uploadFile(
+      reupload.courseId,
+      reupload.fileType,
+      file,
+      currentType || "theory",
+    );
     if (ok) {
       setReupload(null);
       setReuploadFile([]);
@@ -136,6 +153,15 @@ export default function Materials() {
       },
     },
     { title: "课件格式", dataIndex: "courseware_format", render: (v: string) => v || "—" },
+    {
+      title: "课程类型",
+      dataIndex: "course_type",
+      render: (value: string) => (
+        <Tag color={value === "practice" ? "blue" : "default"}>
+          {value === "practice" ? "实战/案例" : value === "theory" ? "理论/通用" : "未分类（旧数据）"}
+        </Tag>
+      ),
+    },
     { title: "错误信息", dataIndex: "error_message", ellipsis: true, render: (v: string) => v || "—" },
     {
       title: "操作",
@@ -173,13 +199,32 @@ export default function Materials() {
       <Table rowKey="course_id" loading={loading} columns={columns} dataSource={list} pagination={false} />
 
       <Modal title="上传文件" open={uploadOpen} onOk={doUpload} onCancel={() => setUploadOpen(false)} okText="上传" confirmLoading={uploading}>
-        <Form form={uploadForm} layout="vertical">
+        <Form
+          form={uploadForm}
+          layout="vertical"
+          initialValues={{ file_type: "video", course_type: "theory" }}
+        >
           <Form.Item name="course_id" label="课程 ID" rules={[{ required: true }]}>
             <Input placeholder="如 course-001" />
           </Form.Item>
           <Form.Item name="file_type" label="文件类型" rules={[{ required: true }]}>
             <Select options={FILE_TYPES} />
           </Form.Item>
+          {uploadFileType === "video" && (
+            <Form.Item
+              name="course_type"
+              label="课程类型"
+              extra="理论/通用课程默认不生成也不向 AI 发送大纲；实战/案例课程可在专栏知识页按 PPT 页区间生成。"
+              rules={[{ required: true }]}
+            >
+              <Select
+                options={[
+                  { value: "theory", label: "理论/通用（不生成大纲）" },
+                  { value: "practice", label: "实战/案例（后续可生成视频大纲）" },
+                ]}
+              />
+            </Form.Item>
+          )}
           <Form.Item label="文件" required>
             <Upload
               beforeUpload={() => false}

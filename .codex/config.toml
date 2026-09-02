@@ -1,0 +1,26 @@
+[features]
+hooks = true
+
+[agents.requirement_reviewer]
+description = "需求评审专家；基于当前实现分类缺陷、变更、文档漂移和技术债，补齐范围、阶段、验收与下游交接。"
+config_file = "agents/requirement-reviewer.toml"
+
+[agents.prd_writer]
+description = "PRD 与追踪专家；把已确认需求形成 Current/Next/Later 规格、稳定 ID、验收标准和 QA/架构交接。"
+config_file = "agents/prd-writer.toml"
+
+[agents.architect]
+description = "全生命周期架构专家；同时保证当前可交付性与 Phase 1+/2 演进边界，用于跨层、数据、鉴权、并发、性能、SSE 或高风险决策。"
+config_file = "agents/architect.toml"
+
+[agents.code_reviewer]
+description = "Demo 轻量代码检查；检查本次差异中的明显错误、异常、错误提示、敏感信息和注释，并维护轻量门禁。"
+config_file = "agents/code-reviewer.toml"
+
+[agents.tester]
+description = "Demo 轻量测试；运行本次改动相关单元测试，维护统一测试记录和轻量门禁。"
+config_file = "agents/tester.toml"
+
+[agents.release_manager]
+description = "版本与发布安全专家；仅按用户逐项授权提交、推送、打标签或发布，并验证范围、门禁新鲜度和回退信息。"
+config_file = "agents/release-manager.toml"

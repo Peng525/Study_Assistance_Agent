@@ -1,0 +1,91 @@
+{
+  "description": "AI 助学项目从 WorkBuddy 迁移的 Codex 生命周期 hooks。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/demo-pre-commit-guard.ps1",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $root '.codex/hooks/demo-pre-commit-guard.ps1')\"",
+            "timeout": 15,
+            "statusMessage": "检查 Demo 轻量提交门禁"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/requirement-change-detector.ps1",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $root '.codex/hooks/requirement-change-detector.ps1')\"",
+            "timeout": 10,
+            "statusMessage": "识别需求变更"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/session-restore.ps1",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $root '.codex/hooks/session-restore.ps1')\"",
+            "timeout": 20,
+            "statusMessage": "恢复项目 memory",
+            "additionalContextLimit": 8000
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "requirement_reviewer|prd_writer|architect|code_reviewer|tester|release_manager",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/demo-subagent-context.ps1",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $root '.codex/hooks/demo-subagent-context.ps1')\"",
+            "timeout": 10,
+            "statusMessage": "注入项目 subagent 执行契约",
+            "additionalContextLimit": 2500
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/pre-compact-save.ps1",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $root '.codex/hooks/pre-compact-save.ps1')\"",
+            "timeout": 20,
+            "statusMessage": "保存压缩前项目状态"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/demo-post-code-check.ps1",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $root '.codex/hooks/demo-post-code-check.ps1')\"",
+            "timeout": 120,
+            "statusMessage": "执行 Demo 代码基础检查",
+            "additionalContextLimit": 3000
+          }
+        ]
+      }
+    ]
+  }
+}

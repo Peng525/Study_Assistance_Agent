@@ -12,6 +12,7 @@ import AdminDashboard from "./pages/admin/Dashboard";
 import AdminModelConfigs from "./pages/admin/ModelConfigs";
 import AdminMaterials from "./pages/admin/Materials";
 import AdminUsers from "./pages/admin/Users";
+import AdminProjectContext from "./pages/admin/ProjectContext";
 import AdminRedirectIfNeeded from "./components/AdminRedirectIfNeeded";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -100,6 +101,7 @@ export default function App() {
           <Route index element={<AdminDashboard />} />
           <Route path="model-configs" element={<AdminModelConfigs />} />
           <Route path="materials" element={<AdminMaterials />} />
+          <Route path="project-context" element={<AdminProjectContext />} />
           <Route path="users" element={<AdminUsers />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

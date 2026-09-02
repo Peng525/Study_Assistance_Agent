@@ -44,6 +44,15 @@ def validate_filename(filename: str) -> str | None:
     return None
 
 
+def validate_course_id(course_id: str) -> str | None:
+    """课程 ID 同时用于目录名，禁止空值和路径片段。"""
+    if not course_id.strip() or len(course_id) > 128:
+        return "课程 ID 不能为空且不能超过 128 个字符"
+    if ".." in course_id or "/" in course_id or "\\" in course_id:
+        return "课程 ID 不能包含路径字符"
+    return None
+
+
 def validate_extension(file_type: str, filename: str) -> str | None:
     """校验扩展名是否在白名单，返回错误文案或 None。"""
     ext = Path(filename).suffix.lower()

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.api.admin_materials import router as materials_router
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password
-from app.models.models import Material, User
+from app.models.models import Material, User, VideoKnowledge
 from app.services import storage
 
 
@@ -33,7 +33,7 @@ def _h():
     return {"Authorization": f"Bearer {create_access_token(1, 'admin', 'admin')}"}
 
 
-def test_upload_video_success(client):
+def test_upload_video_success(client, db_session):
     resp = client.post(
         "/api/admin/materials/upload",
         params={"course_id": "c1", "file_type": "video"},
@@ -42,6 +42,32 @@ def test_upload_video_success(client):
     )
     assert resp.status_code == 200
     assert resp.json()["course_id"] == "c1"
+    material = db_session.query(Material).filter(Material.course_id == "c1").one()
+    context = db_session.query(VideoKnowledge).filter(VideoKnowledge.material_id == material.id).one()
+    assert context.course_type == "theory"
+
+
+def test_upload_video_can_select_practice_and_reject_path_course_id(client, db_session):
+    practice = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "case-1", "file_type": "video", "course_type": "practice"},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")},
+        headers=_h(),
+    )
+    assert practice.status_code == 200
+    material = db_session.query(Material).filter(Material.course_id == "case-1").one()
+    assert db_session.query(VideoKnowledge).filter(
+        VideoKnowledge.material_id == material.id
+    ).one().course_type == "practice"
+
+    unsafe = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "../escape", "file_type": "video"},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")},
+        headers=_h(),
+    )
+    assert unsafe.status_code == 400
+    assert "路径" in unsafe.json()["detail"]
 
 
 def test_upload_wrong_extension(client):

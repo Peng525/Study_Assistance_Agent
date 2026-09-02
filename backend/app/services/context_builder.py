@@ -10,10 +10,14 @@
 """
 
 SYSTEM_PROMPT = (
-    "你是 AI 学习搭档，一位耐心的助学助手。"
-    "你会结合用户提供的课件内容和视频逐字稿，解答用户在学习视频时遇到的问题。"
-    "回答要准确、简洁、有结构，优先引用上下文中的知识点。"
-    "如果上下文不足以回答，请如实说明，不要编造。"
+    "你是 AI 学习搭档，一位耐心的助学助手。请在内部判断问题属于项目问题、混合问题还是知识拓展，"
+    "不要向用户展示分类标签。项目问题必须优先依据项目摘要、项目原始证据、当前视频资料和已审核逐字稿；"
+    "项目摘要与原始证据冲突时，以原始证据为准并指出资料可能需要更新。"
+    "项目资料没有规定的事实必须明确说明，不得把通用建议伪装成项目现状；可以补充通用知识，"
+    "但项目相关建议最终要回到当前项目。纯知识拓展可以直接解释通用知识。"
+    "系统未提供联网搜索能力，不得声称已经搜索互联网。"
+    "播放时间仅是定位锚点；没有逐字稿或时间轴证据时，不得声称知道该时间点具体声音或画面。"
+    "回答要准确、简洁、有结构；上下文不足时如实说明，不要编造。"
 )
 
 TIME_WINDOW_SECONDS = 180  # ±3 分钟
@@ -124,16 +128,37 @@ def filter_courseware(
     return "\n\n".join(chapters[lo:hi])
 
 
-def _build_base_messages(courseware_text: str, transcript: str, selected: str, question: str) -> list[dict]:
+def _build_base_messages(
+    courseware_text: str,
+    transcript: str,
+    selected: str,
+    question: str,
+    *,
+    project_summary: str = "",
+    project_evidence: str = "",
+    video_outline: str = "",
+    video_context: str = "",
+) -> list[dict]:
     """构造基础 messages（不含历史）。"""
     system = SYSTEM_PROMPT
     context_parts = []
+    if project_summary:
+        context_parts.append(f"【已审核项目背景摘要】\n{project_summary}")
+    if video_context:
+        context_parts.append(f"【当前视频元数据】\n{video_context}")
+    if video_outline:
+        context_parts.append(f"【当前视频课程大纲】\n{video_outline}")
     if courseware_text:
-        context_parts.append(f"【课件内容】\n{courseware_text}")
+        context_parts.append(f"【当前视频补充课件】\n{courseware_text}")
+    if project_evidence:
+        context_parts.append(f"【项目原始证据】\n{project_evidence}")
     if transcript:
-        context_parts.append(f"【视频逐字稿（选中时间点±3分钟）】\n{transcript}")
+        context_parts.append(f"【已审核视频逐字稿（当前时间点±3分钟）】\n{transcript}")
     context_block = "\n\n".join(context_parts)
-    user_msg = f"{context_block}\n\n【用户选中的字幕】{selected}\n\n【用户疑问】{question}" if context_block else question
+    selected_block = f"\n\n【用户选中的字幕】{selected}" if selected else ""
+    user_msg = (
+        f"{context_block}{selected_block}\n\n【用户疑问】{question}" if context_block else question
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -150,6 +175,10 @@ def build_context(
     history: list[dict] | None = None,
     start_time: float | None = None,
     video_duration: float | None = None,
+    project_summary: str = "",
+    project_evidence: str = "",
+    video_outline: str = "",
+    video_context: str = "",
 ) -> tuple[list[dict], str]:
     """构造完整 messages。返回 (messages, 提示信息)。
 
@@ -164,10 +193,23 @@ def build_context(
         video_duration=video_duration,
     )
 
-    base = _build_base_messages(courseware, transcript, selected_subtitle, question)
+    base = _build_base_messages(
+        courseware,
+        transcript,
+        selected_subtitle,
+        question,
+        project_summary=project_summary,
+        project_evidence=project_evidence,
+        video_outline=video_outline,
+        video_context=video_context,
+    )
 
-    # 历史只保留最近 5 轮（10 条）
-    history = (history or [])[-MAX_HISTORY_ROUNDS * 2 :]
+    # 历史只保留模型需要的 role/content，内部调度元数据不得透传给供应商。
+    history = [
+        {"role": item["role"], "content": item.get("content", "")}
+        for item in (history or [])
+        if item.get("role") in {"user", "assistant"}
+    ][-MAX_HISTORY_ROUNDS * 2 :]
 
     messages = [base[0]] + list(history) + [base[1]]
     total = sum(estimate_tokens(m["content"]) for m in messages)

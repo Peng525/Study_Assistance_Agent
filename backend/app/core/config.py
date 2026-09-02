@@ -53,5 +53,11 @@ class Settings(BaseSettings):
     # 素材目录
     materials_dir: str = "./materials"
 
+    # 项目共享知识资料（与课程素材目录隔离，避免被课程扫描器误识别）
+    project_context_dir: str = "./project_context"
+
+    # 原生 video 标签使用的课程绑定播放凭证有效期
+    media_ticket_ttl_seconds: int = 21_600  # 6 小时
+
 
 settings = Settings()

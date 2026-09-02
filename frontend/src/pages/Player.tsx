@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Button, Dropdown, message, Spin } from "antd";
-import { MenuFoldOutlined, MenuUnfoldOutlined, LeftOutlined } from "@ant-design/icons";
+import { Dropdown, message, Spin } from "antd";
 import Artplayer from "artplayer";
-import { useNavigate } from "react-router-dom";
 import TopNav from "../components/TopNav";
 import SubtitleOverlay, { Cue, parseVTT } from "../components/SubtitleOverlay";
 import AISidebar from "../components/AISidebar";
@@ -23,96 +21,117 @@ interface MenuState {
 
 export default function Player() {
   const { courseId } = useParams<{ courseId: string }>();
-  const navigate = useNavigate();
   const artRef = useRef<Artplayer | null>(null);
   const videoRef = useRef<HTMLDivElement>(null);
   const [cues, setCues] = useState<Cue[]>([]);
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const [currentCue, setCurrentCue] = useState<Cue | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  const [aiExpanded, setAiExpanded] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [prefill, setPrefill] = useState("");
   const [selSubtitle, setSelSubtitle] = useState("");
   const [selTime, setSelTime] = useState<number | null>(null);
-  const [subtitleFailed, setSubtitleFailed] = useState(false);
-  const [videoUrl, setVideoUrl] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [videoLoading, setVideoLoading] = useState(true);
+  const [videoError, setVideoError] = useState("");
 
   // 加载字幕
   useEffect(() => {
     if (!courseId) return;
+    const controller = new AbortController();
+    setCues([]);
+    setCurrentCue(null);
+
     fetch(`/api/materials/${courseId}/subtitle`, {
       headers: { Authorization: `Bearer ${getToken()}` },
+      signal: controller.signal,
     })
-      .then((r) => {
-        if (r.status === 404) {
-          // 无字幕 → 可能 Whisper 生成中，标记 L4 兜底
-          setSubtitleFailed(true);
-          return null;
-        }
-        return r.text();
-      })
+      .then((response) => (response.ok ? response.text() : null))
       .then((vtt) => {
         if (vtt) setCues(parseVTT(vtt));
-        else setSubtitleFailed(true);
       })
-      .catch(() => setSubtitleFailed(true));
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") setCues([]);
+      });
+
+    return () => controller.abort();
   }, [courseId]);
 
   // 初始化 ArtPlayer
   useEffect(() => {
     if (!courseId || !videoRef.current) return;
 
-    // 视频流需携带 JWT，通过 fetch 获取 blob URL（video 标签无法自定义 header）
-    let blobUrl = "";
-    const art = new Artplayer({
-      container: videoRef.current,
-      url: "",
-      autoplay: false,
-      volume: 0.7,
-      poster: "",
-      customType: {
-        mp4: (video: HTMLVideoElement, url: string) => {
-          video.src = blobUrl;
-        },
-      },
-    });
+    // 先用 JWT 换取课程绑定的短期播放 URL，再由 video 标签原生发起 Range 请求。
+    const controller = new AbortController();
+    let disposed = false;
+    let art: Artplayer | null = null;
+    let lastSave = 0;
+    setVideoLoading(true);
+    setVideoError("");
+    setCurrentTime(0);
+    setVideoDuration(null);
 
-    fetch(`/api/materials/${courseId}/video`, {
+    fetch(`/api/materials/${courseId}/playback-ticket`, {
+      method: "POST",
       headers: { Authorization: `Bearer ${getToken()}` },
+      signal: controller.signal,
     })
-      .then((r) => r.blob())
-      .then((blob) => {
-        blobUrl = URL.createObjectURL(blob);
-        art.switchUrl("/api/materials/" + courseId + "/video");
-        art.on("ready", () => {
-          setLoading(false);
+      .then((response) => {
+        if (!response.ok) throw new Error(`playback ticket failed: ${response.status}`);
+        return response.json() as Promise<{ url: string }>;
+      })
+      .then(({ url }) => {
+        if (disposed) return;
+        const player = new Artplayer({
+          container: videoRef.current!,
+          url,
+          autoplay: false,
+          volume: 0.7,
+          playbackRate: true,
+          setting: true,
+          hotkey: true,
+          fullscreenWeb: true,
+          fullscreen: true,
+          poster: "",
+        });
+        art = player;
+        artRef.current = player;
+        player.on("ready", () => {
+          if (disposed) return;
+          setVideoLoading(false);
+          setVideoDuration(Number.isFinite(player.duration) ? player.duration : null);
           // 恢复上次学习进度
           const saved = loadProgress(courseId);
           if (saved && saved.time > 1) {
-            art.seek = saved.time;
+            player.seek = saved.time;
           }
         });
+        player.on("video:timeupdate", () => {
+          if (disposed) return;
+          setCurrentTime(player.currentTime);
+          const now = Date.now();
+          if (now - lastSave > 3000) {
+            lastSave = now;
+            saveProgress(courseId, player.currentTime);
+          }
+        });
+        player.on("video:error", () => {
+          if (disposed) return;
+          setVideoLoading(false);
+          setVideoError("视频加载失败，请稍后重试");
+        });
       })
-      .catch(() => setLoading(false));
-
-    artRef.current = art;
-    // 记录学习进度（节流：每 3 秒写一次）
-    let lastSave = 0;
-    art.on("video:timeupdate", () => {
-      setCurrentTime(art.currentTime);
-      const now = Date.now();
-      if (now - lastSave > 3000) {
-        lastSave = now;
-        saveProgress(courseId, art.currentTime);
-      }
-    });
-    setLoading(false);
+      .catch((error: Error) => {
+        if (disposed || error.name === "AbortError") return;
+        setVideoLoading(false);
+        setVideoError("视频加载失败，请稍后重试");
+      });
 
     return () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-      art.destroy(false);
-      artRef.current = null;
+      disposed = true;
+      controller.abort();
+      art?.destroy(false);
+      if (artRef.current === art) artRef.current = null;
     };
   }, [courseId]);
 
@@ -140,7 +159,7 @@ export default function Player() {
   const askAI = (m: MenuState) => {
     const art = artRef.current;
     art?.pause();
-    setCollapsed(false);
+    setAiExpanded(true);
     setSelSubtitle(m.selectedText);
     setSelTime(m.mode === "L3" ? m.time : m.cue?.start ?? m.time);
     if (m.mode === "L1") {
@@ -169,57 +188,57 @@ export default function Player() {
   }, []);
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
-      <TopNav />
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+    <div className="player-page">
+      <TopNav aiExpanded={aiExpanded} onToggleAI={() => setAiExpanded((open) => !open)} />
+      <div className="player-workspace">
         {/* 左：视频区 */}
-        <div style={{ flex: 1, position: "relative", background: "var(--bg-video)", minWidth: 0 }}>
-          <div style={{ position: "absolute", top: 8, left: 8, zIndex: 20 }}>
-            <Button icon={<LeftOutlined />} onClick={() => navigate("/")} ghost size="small">
-              返回
-            </Button>
-          </div>
-          <div ref={videoRef} style={{ width: "100%", height: "100%" }} onContextMenu={onContextMenu} />
-          {!subtitleFailed && (
-            <SubtitleOverlay
-              currentTime={currentTime}
-              cues={cues}
-              onCueChange={(c) => setCurrentCue(c)}
+        <main className="player-stage">
+          <div className="player-video-frame">
+            <div
+              ref={videoRef}
+              className="player-video-surface"
+              data-testid="video-surface"
+              onContextMenu={onContextMenu}
             />
-          )}
-          {subtitleFailed && (
-            <div style={{ position: "absolute", bottom: 48, left: 0, right: 0, textAlign: "center", color: "#fff" }}>
-              字幕交互降级为手动模式（字幕生成中或不可用）
-            </div>
-          )}
-        </div>
+            {videoLoading && (
+              <div className="player-video-status">
+                <Spin />
+                <span>视频加载中…</span>
+              </div>
+            )}
+            {videoError && (
+              <div className="player-video-status player-video-status--error" role="alert">
+                {videoError}
+              </div>
+            )}
+            {cues.length > 0 && (
+              <SubtitleOverlay
+                currentTime={currentTime}
+                cues={cues}
+                onCueChange={(c) => setCurrentCue(c)}
+              />
+            )}
+          </div>
+        </main>
 
         {/* 右：AI 侧边栏 */}
-        <div style={{ display: "flex", flexDirection: "row" }}>
-          {!collapsed && (
-            <AISidebar
-              courseId={courseId || ""}
-              prefill={prefill}
-              selectedSubtitle={selSubtitle}
-              startTime={selTime}
-              endTime={selTime}
-            />
-          )}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              padding: "0 4px",
-              background: "var(--bg-header)",
-              borderLeft: "1px solid var(--border)",
+        <div
+          className={`player-ai-panel${aiExpanded ? "" : " player-ai-panel--collapsed"}`}
+          aria-hidden={!aiExpanded}
+        >
+          <AISidebar
+            courseId={courseId || ""}
+            prefill={prefill}
+            selectedSubtitle={selSubtitle}
+            startTime={selTime}
+            endTime={selTime}
+            currentTime={currentTime}
+            videoDuration={videoDuration}
+            onContextConsumed={() => {
+              setSelSubtitle("");
+              setSelTime(null);
             }}
-          >
-            <Button
-              type="text"
-              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-              onClick={() => setCollapsed(!collapsed)}
-            />
-          </div>
+          />
         </div>
       </div>
 

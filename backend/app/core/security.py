@@ -46,6 +46,28 @@ def decode_access_token(token: str) -> dict | None:
         return None
 
 
+def create_media_ticket(user_id: int, course_id: str) -> str:
+    """签发只允许读取单门课程视频的短期凭证。"""
+    payload = {
+        "sub": str(user_id),
+        "course_id": course_id,
+        "purpose": "media_playback",
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=settings.media_ticket_ttl_seconds),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def decode_media_ticket(token: str, course_id: str) -> dict | None:
+    """校验播放凭证用途与课程绑定；无效、过期或串课返回 None。"""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    if payload.get("purpose") != "media_playback" or payload.get("course_id") != course_id:
+        return None
+    return payload
+
+
 # ---- API Key AES-GCM 加密 ----
 
 

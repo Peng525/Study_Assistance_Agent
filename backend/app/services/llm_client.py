@@ -5,25 +5,30 @@ from typing import AsyncIterator
 
 import httpx
 
+from app.services.llm_errors import (
+    LLMErrorCategory,
+    ProviderError,
+    classify_provider_error,
+    local_provider_error,
+)
+
 
 class LLMError(Exception):
     """大模型调用错误，带用户友好文案。"""
 
-    def __init__(self, message: str):
-        self.message = message
-        super().__init__(message)
-
-
-def _friendly_error(status_code: int, body: str) -> str:
-    if status_code == 401 or status_code == 403:
-        return "大模型 API Key 无效，请联系管理员检查配置"
-    if status_code == 429:
-        return "请求过于频繁，请稍后再试"
-    if status_code == 402:
-        return "大模型账户余额不足，请联系管理员充值"
-    if status_code >= 500:
-        return "大模型服务暂时不可用，请稍后重试"
-    return f"大模型调用失败（{status_code}）"
+    def __init__(self, error: ProviderError | str):
+        if isinstance(error, str):
+            error = local_provider_error(LLMErrorCategory.UNKNOWN, error)
+        self.details = error
+        self.message = error.user_message
+        self.category = error.category
+        self.status_code = error.status_code
+        self.provider_code = error.provider_code
+        self.provider_type = error.provider_type
+        self.request_id = error.request_id
+        self.safe_message = error.safe_message
+        self.can_fallback = error.can_fallback
+        super().__init__(self.message)
 
 
 async def stream_chat(
@@ -45,22 +50,66 @@ async def stream_chat(
         try:
             async with client.stream("POST", url, json=payload, headers=headers) as resp:
                 if resp.status_code != 200:
-                    body = (await resp.aread()).decode("utf-8", errors="ignore")
-                    raise LLMError(_friendly_error(resp.status_code, body))
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    raise LLMError(
+                        classify_provider_error(
+                            resp.status_code,
+                            body,
+                            model_name=model_name,
+                            request_id=getattr(resp, "headers", {}).get("x-request-id"),
+                        )
+                    )
+                saw_done = False
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
                     data = line[len("data:") :].strip()
                     if data == "[DONE]":
+                        saw_done = True
                         break
                     try:
                         chunk = json.loads(data)
+                        if isinstance(chunk, dict) and chunk.get("error"):
+                            nested_error = chunk.get("error")
+                            nested_status = (
+                                nested_error.get("status")
+                                if isinstance(nested_error, dict)
+                                else None
+                            )
+                            raise LLMError(
+                                classify_provider_error(
+                                    nested_status,
+                                    chunk,
+                                    model_name=model_name,
+                                    request_id=getattr(resp, "headers", {}).get("x-request-id"),
+                                )
+                            )
                         delta = chunk["choices"][0]["delta"].get("content")
                         if delta:
                             yield delta
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
-        except httpx.TimeoutException:
-            raise LLMError("请求超时，请检查网络后重试") from None
-        except httpx.ConnectError:
-            raise LLMError("无法连接大模型服务，请检查网络") from None
+                if not saw_done:
+                    raise LLMError(
+                        local_provider_error(
+                            LLMErrorCategory.STREAM_INTERRUPTED,
+                            "stream ended before [DONE]",
+                        )
+                    )
+        except LLMError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise LLMError(
+                local_provider_error(LLMErrorCategory.TIMEOUT, str(exc) or "request timeout")
+            ) from None
+        except httpx.ConnectError as exc:
+            raise LLMError(
+                local_provider_error(LLMErrorCategory.CONNECTION, str(exc) or "connect error")
+            ) from None
+        except httpx.TransportError as exc:
+            raise LLMError(
+                local_provider_error(
+                    LLMErrorCategory.STREAM_INTERRUPTED,
+                    str(exc) or "transport interrupted",
+                )
+            ) from None

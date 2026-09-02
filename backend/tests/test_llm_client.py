@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.services.llm_client import LLMError, stream_chat
+from app.services.llm_errors import LLMErrorCategory
 
 
 class _FakeStreamResponse:
@@ -88,3 +89,38 @@ async def test_stream_chat_402_error(patch_httpx):
     with pytest.raises(LLMError, match="余额不足"):
         async for _ in stream_chat("https://x", "sk", "m", []):
             pass
+
+
+@pytest.mark.asyncio
+async def test_stream_without_done_is_interrupted(patch_httpx):
+    patch_httpx["response"] = _FakeStreamResponse(
+        200,
+        ["data: " + json.dumps({"choices": [{"delta": {"content": "partial"}}]})],
+    )
+    with pytest.raises(LLMError) as captured:
+        async for _ in stream_chat("https://x", "sk", "m", []):
+            pass
+    assert captured.value.category == LLMErrorCategory.STREAM_INTERRUPTED
+    assert captured.value.can_fallback is True
+
+
+@pytest.mark.asyncio
+async def test_stream_error_payload_uses_shared_registry(patch_httpx):
+    patch_httpx["response"] = _FakeStreamResponse(
+        200,
+        [
+            "data: "
+            + json.dumps(
+                {
+                    "error": {
+                        "code": "AllocationQuota.FreeTierOnly",
+                        "message": "The free tier has been exhausted",
+                    }
+                }
+            )
+        ],
+    )
+    with pytest.raises(LLMError) as captured:
+        async for _ in stream_chat("https://x", "sk", "m", []):
+            pass
+    assert captured.value.category == LLMErrorCategory.FREE_QUOTA_EXHAUSTED

@@ -55,6 +55,8 @@ export default function SubtitleOverlay({ currentTime, cues, onCueChange }: Subt
     onCueChange?.(cue);
   }, [currentTime, cues, onCueChange]);
 
+  if (!currentCue) return null;
+
   return (
     <div
       ref={cueRef}
@@ -81,7 +83,7 @@ export default function SubtitleOverlay({ currentTime, cues, onCueChange }: Subt
         whiteSpace: "pre-wrap",
       }}
     >
-      {currentCue?.text || ""}
+      {currentCue.text}
     </div>
   );
 }

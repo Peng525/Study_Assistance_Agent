@@ -1,0 +1,12 @@
+#!/bin/sh
+
+repo_root="$(git rev-parse --show-toplevel)" || exit 1
+validator="$repo_root/.codex/hooks/validate-demo-qa-gates.ps1"
+
+if [ ! -f "$validator" ]; then
+  echo "Commit blocked: Demo QA validator is missing: $validator" >&2
+  exit 1
+fi
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$validator" -ProjectRoot "$repo_root"
+exit $?

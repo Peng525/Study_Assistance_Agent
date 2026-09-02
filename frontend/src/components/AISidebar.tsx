@@ -14,6 +14,9 @@ interface AISidebarProps {
   selectedSubtitle?: string;
   startTime?: number | null;
   endTime?: number | null;
+  currentTime?: number;
+  videoDuration?: number | null;
+  onContextConsumed?: () => void;
 }
 
 export default function AISidebar({
@@ -22,12 +25,16 @@ export default function AISidebar({
   selectedSubtitle = "",
   startTime,
   endTime,
+  currentTime = 0,
+  videoDuration,
+  onContextConsumed,
 }: AISidebarProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState(prefill || "");
   const [streaming, setStreaming] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [historyNotice, setHistoryNotice] = useState("");
+  const [currentModel, setCurrentModel] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,7 +42,7 @@ export default function AISidebar({
   }, [prefill]);
 
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+    listRef.current?.scrollTo?.({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
   const send = async () => {
@@ -44,6 +51,8 @@ export default function AISidebar({
     setStreaming(true);
     setInput("");
     setMessages((m) => [...m, { role: "user", content: question }, { role: "assistant", content: "" }]);
+    const anchorTime = selectedSubtitle && startTime != null ? startTime : currentTime;
+    onContextConsumed?.();
 
     try {
       const resp = await fetch("/api/chat/stream", {
@@ -55,8 +64,9 @@ export default function AISidebar({
         body: JSON.stringify({
           course_id: courseId,
           selected_subtitle: selectedSubtitle,
-          start_time: startTime,
-          end_time: endTime,
+          start_time: anchorTime,
+          end_time: selectedSubtitle ? endTime ?? anchorTime : anchorTime,
+          video_duration: videoDuration,
           user_question: question,
           session_id: sessionId,
         }),
@@ -76,6 +86,17 @@ export default function AISidebar({
           if (!line.startsWith("data:")) continue;
           const data = JSON.parse(line.slice(5).trim());
           if (data.session_id) setSessionId(data.session_id);
+          if (data.done && data.model_name) setCurrentModel(data.model_name);
+          if (data.attempt_reset) {
+            setMessages((m) => {
+              const copy = [...m];
+              copy[copy.length - 1] = { ...copy[copy.length - 1], content: "" };
+              return copy;
+            });
+          }
+          if (data.fallback) {
+            setHistoryNotice(data.notice || `正在切换到 ${data.to_model}`);
+          }
           if (data.delta) {
             setMessages((m) => {
               const copy = [...m];
@@ -119,6 +140,7 @@ export default function AISidebar({
       });
       setMessages([]);
       setSessionId(null);
+      setCurrentModel("");
       message.success("会话已清空");
     } catch {
       message.error("清空失败");
@@ -148,7 +170,7 @@ export default function AISidebar({
         <div>
           <Typography.Text strong>AI 学习搭档</Typography.Text>
           <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-            已保留最近 5 轮历史
+            {currentModel ? `当前模型：${currentModel}` : "已保留最近 5 轮历史"}
           </div>
         </div>
         <Button size="small" icon={<ClearOutlined />} onClick={clearSession}>
@@ -212,7 +234,7 @@ export default function AISidebar({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onPressEnter={send}
-            placeholder="输入你的疑问…"
+            placeholder="例如：我现在看到在创建 subagent，我想知道创建 subagent 应该怎么做。"
             disabled={streaming}
           />
           <Button type="primary" icon={<SendOutlined />} onClick={send} loading={streaming}>

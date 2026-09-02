@@ -213,6 +213,9 @@ materials/**/*.gz
 # PDF 等大型文档素材
 materials/**/*.pdf
 
+# 管理员上传的项目背景资料（可能包含私有项目事实）
+/project_context/
+
 # 保留目录结构
 !materials/**/.gitkeep
 !materials/.gitkeep

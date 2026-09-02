@@ -28,13 +28,23 @@ app.add_middleware(
 )
 
 # 注册路由
-from app.api import auth, admin_users, admin_materials, admin_model_configs, admin_dashboard, chat, materials  # noqa: E402
+from app.api import (  # noqa: E402
+    admin_dashboard,
+    admin_materials,
+    admin_model_configs,
+    admin_project_context,
+    admin_users,
+    auth,
+    chat,
+    materials,
+)
 
 app.include_router(auth.router)
 app.include_router(admin_users.router)
 app.include_router(admin_materials.router)
 app.include_router(admin_model_configs.router)
 app.include_router(admin_dashboard.router)
+app.include_router(admin_project_context.router)
 app.include_router(chat.router)
 app.include_router(materials.router)
 

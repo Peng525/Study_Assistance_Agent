@@ -1,6 +1,7 @@
 """素材公开接口（课程列表/视频流/字幕/字幕状态）。"""
 
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -8,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.models.models import Material, User
+from app.core.config import settings
+from app.core.security import create_media_ticket, decode_media_ticket
+from app.models.models import Material, User, VideoKnowledge
 from app.services import whisper_service
 from app.services.context_builder import parse_vtt_cues
 
@@ -46,6 +49,12 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
     if current.role != "admin":
         query = query.filter(Material.status == "ready")  # user 只看 ready
     materials = query.order_by(Material.id).all()
+    knowledge_by_material = {
+        item.material_id: item
+        for item in db.query(VideoKnowledge).filter(
+            VideoKnowledge.material_id.in_([material.id for material in materials])
+        ).all()
+    } if materials else {}
     return [
         {
             "course_id": m.course_id,
@@ -55,6 +64,16 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
             "subtitle_status": m.subtitle_status,
             "title": _extract_title(m.courseware_text_cached),
             "duration": _extract_duration(m.subtitle_path),
+            "course_type": (
+                knowledge_by_material[m.id].course_type
+                if m.id in knowledge_by_material
+                else None
+            ),
+            "outline_status": (
+                knowledge_by_material[m.id].outline_status
+                if m.id in knowledge_by_material
+                else None
+            ),
             "scanned_at": m.scanned_at.isoformat() if m.scanned_at else None,
         }
         for m in materials
@@ -73,11 +92,51 @@ def get_material(course_id: str, current: User = Depends(get_current_user), db: 
         "status": material.status,
         "courseware_format": material.courseware_format,
         "subtitle_status": material.subtitle_status,
+        "course_type": (
+            db.query(VideoKnowledge.course_type)
+            .filter(VideoKnowledge.material_id == material.id)
+            .scalar()
+        ),
     }
 
 
 @router.get("/{course_id}/video")
 def get_video(course_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _video_response(course_id, db)
+
+
+@router.post("/{course_id}/playback-ticket")
+def create_playback_ticket(
+    course_id: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    material = db.query(Material).filter(Material.course_id == course_id).first()
+    if material is None or material.video_path is None or not Path(material.video_path).exists():
+        raise HTTPException(status_code=404, detail="视频不存在")
+    ticket = create_media_ticket(current.id, course_id)
+    encoded_course = quote(course_id, safe="")
+    return {
+        "url": f"/api/materials/{encoded_course}/video-playback?ticket={ticket}",
+        "expires_in": settings.media_ticket_ttl_seconds,
+    }
+
+
+@router.get("/{course_id}/video-playback")
+def get_video_with_ticket(course_id: str, ticket: str, db: Session = Depends(get_db)):
+    payload = decode_media_ticket(ticket, course_id)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="播放凭证无效或已过期")
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="播放凭证无效") from None
+    if db.query(User).filter(User.id == user_id).first() is None:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    return _video_response(course_id, db)
+
+
+def _video_response(course_id: str, db: Session):
     material = db.query(Material).filter(Material.course_id == course_id).first()
     if material is None or material.video_path is None:
         raise HTTPException(status_code=404, detail="视频不存在")
