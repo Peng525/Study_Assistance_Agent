@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Empty, Input, Space, Typography, message } from "antd";
+import { Button, Empty, Input, Typography, message } from "antd";
 import { ClearOutlined, SendOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -341,7 +341,7 @@ export default function AISidebar({
       </div>
 
       <div className="ai-composer">
-        <Space.Compact style={{ width: "100%", alignItems: "flex-end" }}>
+        <div className="ai-composer__row">
           <Input.TextArea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -356,6 +356,7 @@ export default function AISidebar({
           />
           <Button
             type="primary"
+            size="large"
             icon={<SendOutlined />}
             onClick={send}
             loading={streaming}
@@ -363,7 +364,7 @@ export default function AISidebar({
           >
             发送
           </Button>
-        </Space.Compact>
+        </div>
       </div>
     </div>
   );

@@ -345,6 +345,25 @@ body {
   resize: none;
 }
 
+/* 输入框与发送按钮分离：不使用 antd Space.Compact（它会把两者边框合并成一体），
+   改用 flex + gap 让按钮独立，避免视觉上"贴合"在输入框右侧 */
+.ai-composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.ai-composer__row > textarea.ant-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ai-composer__row > .ant-btn {
+  flex: 0 0 auto;
+  height: 40px;
+  padding-inline: 18px;
+}
+
 @media (max-width: 720px) {
   .player-workspace {
     position: relative;
