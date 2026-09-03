@@ -189,16 +189,177 @@ body {
 
 .player-ai-panel {
   flex: none;
-  width: 390px;
   overflow: hidden;
   visibility: visible;
   transition: width 0.2s ease;
+}
+
+.player-splitter {
+  position: relative;
+  z-index: 20;
+  width: 7px;
+  flex: 0 0 7px;
+  cursor: col-resize;
+  background: transparent;
+  outline: none;
+}
+
+.player-splitter::before {
+  position: absolute;
+  inset: 0 auto 0 3px;
+  width: 1px;
+  background: var(--border);
+  content: "";
+}
+
+.player-splitter:hover::before,
+.player-splitter:focus-visible::before,
+.player-splitter--active::before {
+  background: var(--primary);
+}
+
+.player-ai-panel--resizing {
+  transition: none;
 }
 
 .player-ai-panel--collapsed {
   width: 0;
   visibility: hidden;
   pointer-events: none;
+}
+
+.ai-message-row {
+  margin-bottom: 18px;
+}
+
+.ai-message-row--assistant {
+  width: min(100%, 960px);
+  margin-right: auto;
+  margin-left: auto;
+  text-align: left;
+}
+
+.ai-message-row--user {
+  text-align: right;
+}
+
+.ai-user-message {
+  display: inline-block;
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #ffffff;
+  line-height: 1.6;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-thinking-time {
+  margin: 0 0 4px 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+}
+
+.ai-answer {
+  width: 100%;
+  color: var(--text);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  font-size: 16px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.ai-answer > :first-child {
+  margin-top: 0;
+}
+
+.ai-answer > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-answer p,
+.ai-answer ul,
+.ai-answer ol,
+.ai-answer blockquote,
+.ai-answer pre {
+  margin: 0 0 8px;
+}
+
+.ai-answer h1,
+.ai-answer h2,
+.ai-answer h3,
+.ai-answer h4,
+.ai-answer h5,
+.ai-answer h6 {
+  margin: 10px 0 6px;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.ai-answer blockquote {
+  margin-left: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.ai-answer code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-answer table {
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.ai-answer th,
+.ai-answer td {
+  min-width: 120px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.ai-answer th {
+  background: var(--bg-panel);
+  font-weight: 600;
+}
+
+.ai-composer {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.ai-composer textarea {
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  resize: none;
+}
+
+@media (max-width: 720px) {
+  .player-workspace {
+    position: relative;
+  }
+
+  .player-splitter {
+    display: none;
+  }
+
+  .player-ai-panel:not(.player-ai-panel--collapsed) {
+    position: absolute;
+    z-index: 30;
+    inset: 0;
+    width: 100% !important;
+  }
 }
 
 @media (max-width: 900px) {

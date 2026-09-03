@@ -93,6 +93,13 @@ def test_build_context_basic():
     )
     assert notice == ""
     assert messages[0]["role"] == "system"
+    assert "简洁书面中文" in messages[0]["content"]
+    assert "Markdown 装饰符" in messages[0]["content"]
+    assert "不是回答内容的上限" in messages[0]["content"]
+    assert "严格定义与边界" in messages[0]["content"]
+    assert "优点与局限" in messages[0]["content"]
+    assert "适用与不适用场景" in messages[0]["content"]
+    assert "通俗语言或贴切类比" in messages[0]["content"]
     assert messages[-1]["role"] == "user"
     assert "课件内容" in messages[-1]["content"]
     assert "这是问题" in messages[-1]["content"]
@@ -104,9 +111,9 @@ def test_build_context_history_limited():
         history.append({"role": "user", "content": f"q{i}"})
         history.append({"role": "assistant", "content": f"a{i}"})
     messages, _ = build_context(question="新问题", history=history)
-    # 历史只保留最近 5 轮 = 10 条
+    # 模型保留最近 10 轮 = 20 条，完整历史由数据库另行保存。
     history_msgs = messages[1:-1]
-    assert len(history_msgs) == 10
+    assert len(history_msgs) == 20
 
 
 def test_build_context_token_reject():
@@ -114,19 +121,29 @@ def test_build_context_token_reject():
     huge = "课" * 40_000
     messages, notice = build_context(courseware_text=huge, question="q")
     assert messages == []
-    assert "上下文超限" in notice
+    assert "超过模型上下文限制" in notice
 
 
 def test_build_context_token_truncate():
-    # 构造 29K 内容触发截断到 3 轮
+    # 构造 29K 内容触发截断到 5 轮
     huge = "课" * 29_000
     history = []
     for i in range(6):
         history.append({"role": "user", "content": "q"})
         history.append({"role": "assistant", "content": "a"})
     messages, notice = build_context(courseware_text=huge, question="q", history=history)
-    assert "精简历史" in notice
+    assert "最近 5 轮" in notice
     assert len(messages) >= 3
+
+
+def test_build_context_includes_long_term_memory():
+    messages, notice = build_context(
+        question="继续",
+        memory_summary="用户正在学习 Spring，尚未解决循环依赖问题。",
+    )
+    assert notice == ""
+    assert "【专栏长期对话记忆】" in messages[-1]["content"]
+    assert "循环依赖" in messages[-1]["content"]
 
 
 def test_estimate_tokens():

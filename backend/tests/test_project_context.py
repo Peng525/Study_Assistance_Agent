@@ -1,8 +1,11 @@
 """项目共享资料、Summary 审核发布和版本快照测试。"""
 
+from io import BytesIO
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pptx import Presentation
 
 from app.api.admin_project_context import router
 from app.core.database import get_db
@@ -14,6 +17,7 @@ from app.models.models import (
     ProjectChunk,
     ProjectContextVersion,
     ProjectSource,
+    ProjectSourceOutline,
     User,
     VideoKnowledge,
 )
@@ -53,9 +57,9 @@ def client(db_session, tmp_path, monkeypatch):
     async def fake_chain(db, config, api_key, messages, outcome, stream_fn, *, deadline_seconds):
         assert deadline_seconds is None
         outcome.success = True
-        if "课程大纲整理助手" in messages[0]["content"]:
+        if "专栏总大纲整理助手" in messages[0]["content"]:
             assert "不设置固定字数上限" in messages[0]["content"]
-            outcome.answer = "# 视频大纲\n仅依据所选 PPT 页生成"
+            outcome.answer = "# 专栏总大纲\n仅依据整份 PPT 生成"
         else:
             assert "只能依据给定资料" in messages[0]["content"]
             assert "不设置固定字数上限" in messages[0]["content"]
@@ -76,6 +80,16 @@ def client(db_session, tmp_path, monkeypatch):
 
 def _headers():
     return {"Authorization": f"Bearer {create_access_token(1, 'admin', 'admin')}"}
+
+
+def _pptx_bytes(text: str) -> bytes:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide.shapes.title.text = "Spring"
+    slide.placeholders[1].text = text
+    output = BytesIO()
+    presentation.save(output)
+    return output.getvalue()
 
 
 def test_summary_requires_human_publish_and_source_change_marks_stale(client, db_session):
@@ -234,7 +248,7 @@ def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_p
     assert in_use.status_code == 409
 
 
-def test_practice_outline_is_draft_until_admin_saves_it(client, db_session, tmp_path):
+def test_source_outline_is_draft_until_admin_saves_it(client, db_session, tmp_path):
     project = ensure_default_project(db_session)
     material = Material(course_id="case-video", dir_path=str(tmp_path / "case-video"), status="ready")
     db_session.add(material)
@@ -251,24 +265,72 @@ def test_practice_outline_is_draft_until_admin_saves_it(client, db_session, tmp_
     )
     db_session.add(source)
     db_session.commit()
-    mapped = client.put(
-        "/api/admin/project-context/videos/case-video/knowledge",
-        json={"source_id": source.id, "page_start": 1, "page_end": 1, "course_type": "practice"},
-        headers=_headers(),
-    )
-    assert mapped.status_code == 200
     generated = client.post(
-        "/api/admin/project-context/videos/case-video/outline/generate", headers=_headers()
+        f"/api/admin/project-context/sources/{source.id}/outline/generate", headers=_headers()
     )
     assert generated.status_code == 200
-    assert generated.json()["video"]["outline_status"] == "draft"
+    assert generated.json()["source"]["outline_status"] == "draft"
     saved = client.put(
-        "/api/admin/project-context/videos/case-video/outline",
-        json={"outline_text": generated.json()["video"]["outline_text"]},
+        f"/api/admin/project-context/sources/{source.id}/outline",
+        json={"outline_text": generated.json()["source"]["outline_text"] + "\n" + "完整事实" * 800},
         headers=_headers(),
     )
     assert saved.status_code == 200
-    assert saved.json()["video"]["outline_status"] == "ready"
+    assert saved.json()["source"]["outline_status"] == "ready"
+    assert db_session.query(ProjectSourceOutline).filter_by(source_id=source.id).one().source_hash == source.source_hash
+
+
+def test_same_name_replace_preserves_column_and_invalidates_context(client, db_session, tmp_path):
+    uploaded = client.post(
+        "/api/admin/project-context/sources",
+        files={"file": ("Spring.pptx", _pptx_bytes("旧课件"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=_headers(),
+    )
+    assert uploaded.status_code == 200
+    source_id = uploaded.json()["source"]["id"]
+    source = db_session.get(ProjectSource, source_id)
+    material = Material(course_id="spring-video", dir_path=str(tmp_path / "spring-video"), status="ready")
+    db_session.add(material)
+    db_session.flush()
+    bind_material(db_session, material, ensure_default_project(db_session))
+    knowledge = VideoKnowledge(
+        material_id=material.id,
+        source_id=source_id,
+        course_type="theory",
+        page_start=1,
+        page_end=1,
+        knowledge_text_cached="旧课程文本",
+    )
+    outline = ProjectSourceOutline(
+        source_id=source_id,
+        outline_text="旧总大纲",
+        status="ready",
+        source_hash=source.source_hash,
+    )
+    db_session.add_all([knowledge, outline])
+    db_session.commit()
+
+    duplicate = client.post(
+        "/api/admin/project-context/sources",
+        files={"file": ("SPRING.PPTX", _pptx_bytes("新课件"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=_headers(),
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["source_id"] == source_id
+
+    replaced = client.put(
+        f"/api/admin/project-context/sources/{source_id}",
+        files={"file": ("SPRING.PPTX", _pptx_bytes("新课件"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=_headers(),
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["source"]["id"] == source_id
+    assert replaced.json()["affected_video_count"] == 1
+    db_session.expire_all()
+    assert db_session.get(ProjectSourceOutline, outline.id).status == "stale"
+    refreshed = db_session.get(VideoKnowledge, knowledge.id)
+    assert (refreshed.page_start, refreshed.page_end) == (1, 1)
+    assert refreshed.knowledge_text_cached is None
 
 
 def test_deleting_source_marks_published_summary_stale(client):

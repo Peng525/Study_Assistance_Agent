@@ -8,6 +8,20 @@ import AISidebar from "../components/AISidebar";
 import { getToken } from "../store/auth";
 import { loadProgress, saveProgress } from "../store/progress";
 
+const AI_WIDTH_KEY = "ai-study-sidebar-width";
+const MIN_AI_WIDTH = 30;
+// 上限与默认值同为 50%：AI 侧边栏最多占半屏，保证视频区始终有一半可见
+const MAX_AI_WIDTH = 50;
+
+function clampAiWidth(value: number) {
+  return Math.min(MAX_AI_WIDTH, Math.max(MIN_AI_WIDTH, value));
+}
+
+function loadAiWidth() {
+  const saved = Number(localStorage.getItem(AI_WIDTH_KEY));
+  return Number.isFinite(saved) && saved > 0 ? clampAiWidth(saved) : 50;
+}
+
 // 右键菜单状态
 interface MenuState {
   visible: boolean;
@@ -23,6 +37,9 @@ export default function Player() {
   const { courseId } = useParams<{ courseId: string }>();
   const artRef = useRef<Artplayer | null>(null);
   const videoRef = useRef<HTMLDivElement>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const aiWidthRef = useRef(loadAiWidth());
   const [cues, setCues] = useState<Cue[]>([]);
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
@@ -34,6 +51,23 @@ export default function Player() {
   const [selTime, setSelTime] = useState<number | null>(null);
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoError, setVideoError] = useState("");
+  const [aiWidth, setAiWidth] = useState(aiWidthRef.current);
+  const [resizing, setResizing] = useState(false);
+
+  const resizeFromPointer = (clientX: number) => {
+    const bounds = workspaceRef.current?.getBoundingClientRect();
+    if (!bounds?.width) return;
+    const next = clampAiWidth(((bounds.right - clientX) / bounds.width) * 100);
+    aiWidthRef.current = next;
+    setAiWidth(next);
+  };
+
+  const saveAiWidth = (value: number) => {
+    const next = clampAiWidth(value);
+    aiWidthRef.current = next;
+    setAiWidth(next);
+    localStorage.setItem(AI_WIDTH_KEY, String(next));
+  };
 
   // 加载字幕
   useEffect(() => {
@@ -190,7 +224,7 @@ export default function Player() {
   return (
     <div className="player-page">
       <TopNav aiExpanded={aiExpanded} onToggleAI={() => setAiExpanded((open) => !open)} />
-      <div className="player-workspace">
+      <div ref={workspaceRef} className="player-workspace">
         {/* 左：视频区 */}
         <main className="player-stage">
           <div className="player-video-frame">
@@ -222,9 +256,52 @@ export default function Player() {
         </main>
 
         {/* 右：AI 侧边栏 */}
+        {aiExpanded && (
+          <div
+            className={`player-splitter${resizing ? " player-splitter--active" : ""}`}
+            role="separator"
+            aria-label="调整 AI 对话宽度"
+            aria-orientation="vertical"
+            aria-valuemin={MIN_AI_WIDTH}
+            aria-valuemax={MAX_AI_WIDTH}
+            aria-valuenow={Math.round(aiWidth)}
+            tabIndex={0}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              draggingRef.current = true;
+              setResizing(true);
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              if (draggingRef.current) resizeFromPointer(event.clientX);
+            }}
+            onPointerUp={(event) => {
+              if (!draggingRef.current) return;
+              resizeFromPointer(event.clientX);
+              draggingRef.current = false;
+              setResizing(false);
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              const bounds = workspaceRef.current?.getBoundingClientRect();
+              if (bounds?.width) {
+                saveAiWidth(((bounds.right - event.clientX) / bounds.width) * 100);
+              }
+            }}
+            onPointerCancel={() => {
+              draggingRef.current = false;
+              setResizing(false);
+              saveAiWidth(aiWidthRef.current);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              saveAiWidth(aiWidth + (event.key === "ArrowLeft" ? 2 : -2));
+            }}
+          />
+        )}
         <div
-          className={`player-ai-panel${aiExpanded ? "" : " player-ai-panel--collapsed"}`}
+          className={`player-ai-panel${aiExpanded ? "" : " player-ai-panel--collapsed"}${resizing ? " player-ai-panel--resizing" : ""}`}
           aria-hidden={!aiExpanded}
+          style={{ width: aiExpanded ? `${aiWidth}%` : 0 }}
         >
           <AISidebar
             courseId={courseId || ""}

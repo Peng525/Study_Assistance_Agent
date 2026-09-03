@@ -17,15 +17,20 @@ vi.mock("antd", async (importOriginal) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  (api.get as any).mockResolvedValue({ data: [] });
+  (api.get as any).mockImplementation((url: string) => Promise.resolve(
+    url === "/materials"
+      ? { data: [] }
+      : { data: { sources: [{ id: 1, filename: "Spring.pptx", column_name: "Spring", format: "pptx" }] } },
+  ));
 });
 
-describe("素材上传课程类型", () => {
-  it("上传视频时默认选择理论通用且说明不生成大纲", async () => {
+describe("素材上传专栏归类", () => {
+  it("上传视频时必须选择专栏，课程类型只用于管理分类", async () => {
     render(<Materials />);
     fireEvent.click(await screen.findByRole("button", { name: /上传文件/ }));
 
-    expect(await screen.findByText("理论/通用（不生成大纲）")).toBeInTheDocument();
-    expect(screen.getByText(/理论\/通用课程默认不生成也不向 AI 发送大纲/)).toBeInTheDocument();
+    expect(await screen.findByLabelText("所属专栏")).toBeInTheDocument();
+    expect(screen.getByText(/视频上传后会直接归入所选 PPT 专栏/)).toBeInTheDocument();
+    expect(screen.getByText(/理论和实战都会使用专栏总大纲与当前视频课件原文/)).toBeInTheDocument();
   });
 });

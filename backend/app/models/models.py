@@ -133,6 +133,22 @@ class ProjectSource(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
+class ProjectSourceOutline(Base):
+    """A manually reviewed outline for one PPTX column."""
+
+    __tablename__ = "project_source_outlines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("project_sources.id"), unique=True, index=True, nullable=False
+    )
+    outline_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="empty", nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class VideoKnowledge(Base):
     """单个视频从共享 PPT 页区间提取的知识文本与可选大纲。"""
 
@@ -226,6 +242,86 @@ class ChatSession(Base):
     model_config_id: Mapped[int | None] = mapped_column(ForeignKey("model_configs.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class ColumnChatSession(Base):
+    """A user's single persistent conversation for one PPT column."""
+
+    __tablename__ = "column_chat_sessions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_id", name="uq_column_chat_user_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("project_sources.id"), index=True, nullable=False
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_sessions.session_id"), unique=True, index=True, nullable=False
+    )
+    memory_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    summarized_through_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class ChatMessage(Base):
+    """Complete immutable message history; ChatSession keeps only a compatibility mirror."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint("session_id", "turn_id", "role", name="uq_chat_message_turn_role"),
+        Index("ix_chat_messages_session_id_id", "session_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_sessions.session_id"), index=True, nullable=False
+    )
+    turn_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    course_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    video_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    start_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    context_meta_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class LLMCallLog(Base):
+    """Admin-only audit record for one learner chat request."""
+
+    __tablename__ = "llm_call_logs"
+    __table_args__ = (
+        Index("ix_llm_call_logs_user_created", "user_id", "created_at"),
+        Index("ix_llm_call_logs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    request_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    username_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    course_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    video_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    start_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_question: Mapped[str] = mapped_column(Text, nullable=False)
+    request_messages_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    prompt_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
+    attempted_models_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    final_model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    fallback_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    answer_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SystemSetting(Base):

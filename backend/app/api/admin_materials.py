@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
 from app.core.database import get_db
-from app.models.models import Material, User
+from app.models.models import Material, ProjectSource, User
 from app.services import storage
 from app.services import whisper_service
 from app.services.courseware import extract_courseware
-from app.services.project_context import bind_material
+from app.services.project_context import bind_material, ensure_default_project, ensure_video_knowledge
 from app.services.subtitle import detect_unsupported_format, srt_to_vtt
 
 router = APIRouter(prefix="/api/admin/materials", tags=["admin-materials"])
@@ -31,6 +31,7 @@ async def upload(
     file_type: str,
     file: UploadFile,
     course_type: str = "theory",
+    source_id: int | None = None,
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -38,6 +39,17 @@ async def upload(
         raise HTTPException(status_code=400, detail="未知文件类型")
     if file_type == "video" and course_type not in {"theory", "practice"}:
         raise HTTPException(status_code=400, detail="课程类型仅支持 theory 或 practice")
+    selected_source = None
+    if file_type == "video" and source_id is not None:
+        project = ensure_default_project(db)
+        selected_source = db.query(ProjectSource).filter(
+            ProjectSource.id == source_id,
+            ProjectSource.project_id == project.id,
+            ProjectSource.status == "active",
+            ProjectSource.source_format == "pptx",
+        ).first()
+        if selected_source is None:
+            raise HTTPException(status_code=400, detail="所选 PPT 专栏不存在或已失效")
     course_id_error = storage.validate_course_id(course_id)
     if course_id_error:
         raise HTTPException(status_code=400, detail=course_id_error)
@@ -109,6 +121,18 @@ async def upload(
     _rescan_material(db, material)
     if file_type == "video":
         bind_material(db, material, course_type=course_type)
+        if selected_source is not None:
+            knowledge = ensure_video_knowledge(db, material, course_type)
+            if knowledge.source_id != selected_source.id:
+                knowledge.source_id = selected_source.id
+                knowledge.page_start = None
+                knowledge.page_end = None
+                knowledge.knowledge_text_cached = None
+                knowledge.knowledge_text_path = None
+                knowledge.outline_text_cached = None
+                knowledge.outline_text_path = None
+                knowledge.outline_status = "empty"
+                db.add(knowledge)
         db.commit()
 
     return {
@@ -117,6 +141,7 @@ async def upload(
         "path": str(dest),
         "course_id": course_id,
         "course_type": course_type if file_type == "video" else None,
+        "source_id": selected_source.id if selected_source else None,
     }
 
 

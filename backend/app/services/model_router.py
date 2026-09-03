@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Callable
@@ -52,6 +53,9 @@ class RoutingOutcome:
     attempted_models: list[str] = field(default_factory=list)
     fallback_count: int = 0
     last_error: ProviderError | None = None
+    rejection_message: str | None = None
+    request_started_at: float = field(default_factory=perf_counter)
+    thinking_ms: int | None = None
 
 
 def _iso_utc(value: datetime | None) -> str | None:
@@ -275,9 +279,10 @@ async def stream_model_chain(
 ) -> AsyncIterator[dict]:
     candidates = get_candidates(db, config)
     if not candidates:
+        outcome.rejection_message = "当前没有可用模型，请在管理后台重置、启用或配置模型链"
         yield {
             "type": "error",
-            "error": "当前没有可用模型，请在管理后台重置、启用或配置模型链",
+            "error": outcome.rejection_message,
         }
         return
 
@@ -297,14 +302,21 @@ async def stream_model_chain(
                     candidate.model_name,
                     messages,
                 ):
+                    first_delta = not fragments
                     fragments.append(delta)
-                    yield {
+                    event = {
                         "type": "delta",
                         "delta": delta,
                         "model_name": candidate.model_name,
                         "attempt": index,
                         "fallback_count": index - 1,
                     }
+                    if first_delta:
+                        outcome.thinking_ms = max(
+                            0, int((perf_counter() - outcome.request_started_at) * 1000)
+                        )
+                        event["thinking_ms"] = outcome.thinking_ms
+                    yield event
             record_route_success(db, candidate.route)
             outcome.success = True
             outcome.answer = "".join(fragments)
@@ -317,6 +329,7 @@ async def stream_model_chain(
                 "model_name": candidate.model_name,
                 "attempt": index,
                 "fallback_count": index - 1,
+                "thinking_ms": outcome.thinking_ms,
             }
             return
         except asyncio.TimeoutError:
@@ -334,6 +347,7 @@ async def stream_model_chain(
             llm_error.details,
         )
         if fragments:
+            outcome.thinking_ms = None
             yield {
                 "type": "attempt_reset",
                 "attempt_reset": True,

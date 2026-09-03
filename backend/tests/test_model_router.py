@@ -73,7 +73,7 @@ def test_route_timestamps_are_serialized_with_utc_offset(db_session):
 
 
 @pytest.mark.asyncio
-async def test_partial_stream_is_reset_then_lower_model_reanswers(db_session):
+async def test_partial_stream_is_reset_then_lower_model_reanswers(db_session, monkeypatch):
     cfg = _config(db_session)
     first = ModelRoute(model_config_id=cfg.id, display_name="first", model_name="first", priority=10)
     second = ModelRoute(model_config_id=cfg.id, display_name="second", model_name="second", priority=20)
@@ -93,7 +93,9 @@ async def test_partial_stream_is_reset_then_lower_model_reanswers(db_session):
         yield "完整"
         yield "答案"
 
-    outcome = RoutingOutcome()
+    elapsed = iter([11.0, 12.0])
+    monkeypatch.setattr("app.services.model_router.perf_counter", lambda: next(elapsed))
+    outcome = RoutingOutcome(request_started_at=10.0)
     events = [
         event
         async for event in stream_model_chain(db_session, cfg, "secret", [], outcome, fake_stream)
@@ -109,6 +111,10 @@ async def test_partial_stream_is_reset_then_lower_model_reanswers(db_session):
     assert outcome.answer == "完整答案"
     assert outcome.attempted_models == ["first", "second"]
     assert outcome.fallback_count == 1
+    assert outcome.thinking_ms == 2000
+    assert events[0]["thinking_ms"] == 1000
+    assert events[3]["thinking_ms"] == 2000
+    assert events[-1]["thinking_ms"] == 2000
     db_session.refresh(first)
     assert first.health_status == "quota_exhausted"
 

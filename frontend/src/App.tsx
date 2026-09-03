@@ -13,6 +13,7 @@ import AdminModelConfigs from "./pages/admin/ModelConfigs";
 import AdminMaterials from "./pages/admin/Materials";
 import AdminUsers from "./pages/admin/Users";
 import AdminProjectContext from "./pages/admin/ProjectContext";
+import AdminLLMCallLogs from "./pages/admin/LLMCallLogs";
 import AdminRedirectIfNeeded from "./components/AdminRedirectIfNeeded";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -101,8 +102,13 @@ export default function App() {
           <Route index element={<AdminDashboard />} />
           <Route path="model-configs" element={<AdminModelConfigs />} />
           <Route path="materials" element={<AdminMaterials />} />
-          <Route path="project-context" element={<AdminProjectContext />} />
+          <Route path="project-context" element={<Navigate to="/admin/columns/courseware" replace />} />
+          <Route path="columns/courseware" element={<AdminProjectContext />} />
+          <Route path="columns" element={<AdminProjectContext />} />
+          <Route path="columns/:sourceId" element={<AdminProjectContext />} />
+          <Route path="columns/:sourceId/videos/:courseId" element={<AdminProjectContext />} />
           <Route path="users" element={<AdminUsers />} />
+          <Route path="llm-call-logs" element={<AdminLLMCallLogs />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

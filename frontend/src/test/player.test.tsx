@@ -157,6 +157,72 @@ describe("播放器页面", () => {
     expect(container.querySelector(".player-ai-panel")).toHaveAttribute("aria-hidden", "false");
   });
 
+  it("AI 对话默认半屏，支持拖拽、键盘调整并记住宽度", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    mockMediaFetch();
+    const { container } = renderPlayer();
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+
+    const panel = container.querySelector(".player-ai-panel") as HTMLElement;
+    const workspace = container.querySelector(".player-workspace") as HTMLElement;
+    const splitter = screen.getByRole("separator", { name: "调整 AI 对话宽度" });
+    expect(panel.style.width).toBe("50%");
+    workspace.getBoundingClientRect = () => ({
+      width: 1000, right: 1000, left: 0, top: 0, bottom: 600, height: 600,
+      x: 0, y: 0, toJSON: () => ({}),
+    });
+    (splitter as any).setPointerCapture = vi.fn();
+    (splitter as any).releasePointerCapture = vi.fn();
+
+    // 向左拖到远超上限的坐标（理论值 90%），验证被 clamp 到 MAX_AI_WIDTH
+    fireEvent.pointerDown(splitter, { pointerId: 1, clientX: 500 });
+    fireEvent.pointerMove(splitter, { pointerId: 1, clientX: 100 });
+    fireEvent.pointerUp(splitter, { pointerId: 1, clientX: 100 });
+    expect(panel.style.width).toBe("50%");
+    expect(localStorage.getItem("ai-study-sidebar-width")).toBe("50");
+
+    fireEvent.keyDown(splitter, { key: "ArrowRight" });
+    expect(panel.style.width).toBe("48%");
+    expect(localStorage.getItem("ai-study-sidebar-width")).toBe("48");
+
+    // 拖到区间内的中间值（理论值 40%），验证非边界值也能正常保存
+    fireEvent.pointerDown(splitter, { pointerId: 2, clientX: 520 });
+    fireEvent.pointerMove(splitter, { pointerId: 2, clientX: 600 });
+    fireEvent.pointerCancel(splitter, { pointerId: 2 });
+    expect(panel.style.width).toBe("40%");
+    expect(localStorage.getItem("ai-study-sidebar-width")).toBe("40");
+    expect(splitter).not.toHaveClass("player-splitter--active");
+
+    fireEvent.click(screen.getByRole("button", { name: "收起 AI 对话" }));
+    expect(panel.style.width).toBe("0px");
+    fireEvent.click(screen.getByRole("button", { name: "展开 AI 对话" }));
+    expect(panel.style.width).toBe("40%");
+  });
+
+  it("AI 侧边栏向左拖到底也不超过半屏，视频区始终保留一半", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    mockMediaFetch();
+    const { container } = renderPlayer();
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+
+    const panel = container.querySelector(".player-ai-panel") as HTMLElement;
+    const workspace = container.querySelector(".player-workspace") as HTMLElement;
+    const splitter = screen.getByRole("separator", { name: "调整 AI 对话宽度" });
+    workspace.getBoundingClientRect = () => ({
+      width: 1000, right: 1000, left: 0, top: 0, bottom: 600, height: 600,
+      x: 0, y: 0, toJSON: () => ({}),
+    });
+    (splitter as any).setPointerCapture = vi.fn();
+    (splitter as any).releasePointerCapture = vi.fn();
+
+    // 一路拖到最左侧（理论值 100%），仍应停在 50%
+    fireEvent.pointerDown(splitter, { pointerId: 3, clientX: 900 });
+    fireEvent.pointerMove(splitter, { pointerId: 3, clientX: 0 });
+    fireEvent.pointerUp(splitter, { pointerId: 3, clientX: 0 });
+    expect(panel.style.width).toBe("50%");
+    expect(splitter).toHaveAttribute("aria-valuemax", "50");
+  });
+
   it("有效字幕只在当前时间命中 cue 时显示", async () => {
     mockMediaFetch({
       subtitle: "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n当前字幕\n",

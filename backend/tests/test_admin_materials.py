@@ -7,8 +7,9 @@ from fastapi.testclient import TestClient
 from app.api.admin_materials import router as materials_router
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password
-from app.models.models import Material, User, VideoKnowledge
+from app.models.models import Material, ProjectSource, User, VideoKnowledge
 from app.services import storage
+from app.services.project_context import ensure_default_project
 
 
 @pytest.fixture()
@@ -68,6 +69,40 @@ def test_upload_video_can_select_practice_and_reject_path_course_id(client, db_s
     )
     assert unsafe.status_code == 400
     assert "路径" in unsafe.json()["detail"]
+
+
+def test_upload_video_can_bind_ppt_column(client, db_session, tmp_path):
+    project = ensure_default_project(db_session)
+    source = ProjectSource(
+        project_id=project.id,
+        original_filename="Spring.pptx",
+        source_format="pptx",
+        file_path=str(tmp_path / "Spring.pptx"),
+        text_cached="【第1页】\nSpring",
+        source_hash="a" * 64,
+        status="active",
+    )
+    db_session.add(source)
+    db_session.commit()
+    response = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "spring-1", "file_type": "video", "source_id": source.id},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")},
+        headers=_h(),
+    )
+    assert response.status_code == 200
+    material = db_session.query(Material).filter_by(course_id="spring-1").one()
+    knowledge = db_session.query(VideoKnowledge).filter_by(material_id=material.id).one()
+    assert knowledge.source_id == source.id
+
+    invalid = client.post(
+        "/api/admin/materials/upload",
+        params={"course_id": "bad-source", "file_type": "video", "source_id": 9999},
+        files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")},
+        headers=_h(),
+    )
+    assert invalid.status_code == 400
+    assert db_session.query(Material).filter_by(course_id="bad-source").first() is None
 
 
 def test_upload_wrong_extension(client):

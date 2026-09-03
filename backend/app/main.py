@@ -30,6 +30,7 @@ app.add_middleware(
 # 注册路由
 from app.api import (  # noqa: E402
     admin_dashboard,
+    admin_llm_call_logs,
     admin_materials,
     admin_model_configs,
     admin_project_context,
@@ -44,6 +45,7 @@ app.include_router(admin_users.router)
 app.include_router(admin_materials.router)
 app.include_router(admin_model_configs.router)
 app.include_router(admin_dashboard.router)
+app.include_router(admin_llm_call_logs.router)
 app.include_router(admin_project_context.router)
 app.include_router(chat.router)
 app.include_router(materials.router)

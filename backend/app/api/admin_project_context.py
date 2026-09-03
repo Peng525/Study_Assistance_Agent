@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from app.models.models import (
     ProjectContextVersion,
     ProjectMaterial,
     ProjectSource,
+    ProjectSourceOutline,
     User,
     VideoKnowledge,
 )
@@ -53,8 +55,8 @@ SUMMARY_SYSTEM_PROMPT = """你是项目背景资料整理助手。只能依据�
 优先保留项目事实，避免复述和展开无关的通用知识；不设置固定字数上限。
 遇到资料冲突时明确列出冲突，不得自行选择。不要输出 API Key、密钥、请求头或疑似凭据。"""
 
-OUTLINE_SYSTEM_PROMPT = """你是课程大纲整理助手。只能依据当前视频已选择的课件文本生成中文 Markdown 大纲，不得补充外部事实。
-大纲应完整覆盖本视频对应页区间的主题、关键概念、步骤或案例约束，并列出资料未说明的边界。
+OUTLINE_SYSTEM_PROMPT = """你是专栏总大纲整理助手。只能依据整份 PPT 课件文本生成中文 Markdown 大纲，不得补充外部事实。
+大纲应完整覆盖整份课件的结构、主题、关键概念、步骤或案例约束，并列出资料未说明的边界。
 不设置固定字数上限，但避免机械复述、无关扩写和疑似密钥信息。"""
 
 
@@ -78,19 +80,29 @@ class VideoCourseTypeUpdate(BaseModel):
     course_type: Literal["theory", "practice"]
 
 
-class VideoOutlineUpdate(BaseModel):
+class SourceOutlineUpdate(BaseModel):
     outline_text: str = ""
 
 
-def _serialize_source(source: ProjectSource) -> dict:
+def _serialize_source(
+    source: ProjectSource,
+    outline: ProjectSourceOutline | None = None,
+) -> dict:
     return {
         "id": source.id,
         "filename": source.original_filename,
+        "column_name": Path(source.original_filename).stem,
         "format": source.source_format,
         "sha256": source.source_hash,
         "status": source.status,
+        "upload_status": "uploaded" if source.status == "active" else source.status,
         "created_at": source.created_at.isoformat() if source.created_at else None,
         "page_count": len(ppt_pages(source)),
+        "outline_text": outline.outline_text if outline else "",
+        "outline_status": outline.status if outline else "empty",
+        "outline_updated_at": (
+            outline.updated_at.isoformat() if outline and outline.updated_at else None
+        ),
     }
 
 
@@ -113,10 +125,17 @@ def _serialize_video_knowledge(
             if knowledge and knowledge.knowledge_text_path
             else None
         ),
-        "outline_text": (knowledge.outline_text_cached or "") if knowledge else "",
-        "outline_status": knowledge.outline_status if knowledge else "empty",
         "subtitle_included": knowledge.subtitle_included if knowledge else False,
         "legacy_context": knowledge is None,
+        "knowledge_status": (
+            "ready"
+            if knowledge and (knowledge.knowledge_text_cached or "").strip()
+            else "stale"
+            if knowledge and knowledge.source_id and knowledge.page_start and knowledge.page_end
+            else "pending"
+            if knowledge and knowledge.source_id
+            else "unassigned"
+        ),
     }
 
 
@@ -138,6 +157,51 @@ def _knowledge_file(material: Material, filename: str, content: str) -> str:
     temp_path.write_text(content, encoding="utf-8")
     temp_path.replace(path)
     return str(path)
+
+
+async def _store_source_upload(file: UploadFile, project_key: str) -> tuple[Path, str, str, str | None]:
+    """Validate, store and extract a source without changing database state."""
+    original_filename = file.filename or ""
+    filename_error = storage.validate_filename(original_filename)
+    if filename_error:
+        raise HTTPException(status_code=400, detail=filename_error)
+    extension = storage.validate_extension("courseware", original_filename)
+    if extension is None or not extension.startswith("."):
+        raise HTTPException(status_code=400, detail=extension or "不支持的资料格式")
+
+    root = source_storage_root() / project_key
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / f"source_{uuid.uuid4().hex}{extension}"
+    temp_path = destination.with_suffix(destination.suffix + ".part")
+    max_bytes = storage.FILE_TYPES["courseware"]["max_bytes"]
+    head = b""
+    total = 0
+    digest = hashlib.sha256()
+    try:
+        with temp_path.open("wb") as output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                if not head:
+                    head = chunk[:16]
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=400, detail="项目资料文件过大，上限 50MB")
+                output.write(chunk)
+                digest.update(chunk)
+        magic_error = storage.validate_magic("courseware", extension, head)
+        if magic_error:
+            raise HTTPException(status_code=400, detail=magic_error)
+        temp_path.replace(destination)
+        extracted_text, _, warning = extract_courseware(destination, extension.lstrip("."))
+        if not extracted_text.strip():
+            raise HTTPException(status_code=400, detail=warning or "未能从项目资料中提取文本")
+        return destination, extracted_text, digest.hexdigest(), warning
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _serialize_version(version: ProjectContextVersion | None) -> dict | None:
@@ -175,11 +239,20 @@ def get_project_context(
             VideoKnowledge.material_id.in_([material.id for material in materials])
         ).all()
     } if materials else {}
-    sources_by_id = {source.id: source for source in active_sources(db, project.id)}
+    sources = active_sources(db, project.id)
+    sources_by_id = {source.id: source for source in sources}
+    outlines_by_source = {
+        outline.source_id: outline
+        for outline in db.query(ProjectSourceOutline).filter(
+            ProjectSourceOutline.source_id.in_(list(sources_by_id))
+        ).all()
+    } if sources_by_id else {}
     db.commit()
     return {
         "project": {"project_key": project.project_key, "name": project.name},
-        "sources": [_serialize_source(source) for source in active_sources(db, project.id)],
+        "sources": [
+            _serialize_source(source, outlines_by_source.get(source.id)) for source in sources
+        ],
         "published": _serialize_version(latest_published_version(db, project.id)),
         "draft": _serialize_version(latest_draft_version(db, project.id)),
         "material_count": len(materials),
@@ -204,48 +277,32 @@ async def upload_project_source(
 ):
     project = ensure_default_project(db)
     original_filename = file.filename or ""
-    filename_error = storage.validate_filename(original_filename)
-    if filename_error:
-        raise HTTPException(status_code=400, detail=filename_error)
-    extension = storage.validate_extension("courseware", original_filename)
-    if extension is None or not extension.startswith("."):
-        raise HTTPException(status_code=400, detail=extension or "不支持的资料格式")
+    name_key = unicodedata.normalize("NFC", original_filename).casefold()
+    duplicate = next(
+        (
+            source
+            for source in active_sources(db, project.id)
+            if unicodedata.normalize("NFC", source.original_filename).casefold() == name_key
+        ),
+        None,
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "同名课件已上传，是否覆盖现有专栏？", "source_id": duplicate.id},
+        )
 
-    root = source_storage_root() / project.project_key
-    root.mkdir(parents=True, exist_ok=True)
-    destination = root / f"source_{uuid.uuid4().hex}{extension}"
-    temp_path = destination.with_suffix(destination.suffix + ".part")
-    max_bytes = storage.FILE_TYPES["courseware"]["max_bytes"]
-    head = b""
-    total = 0
-    digest = hashlib.sha256()
+    destination, extracted_text, source_hash, warning = await _store_source_upload(
+        file, project.project_key
+    )
     try:
-        with temp_path.open("wb") as output:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                if not head:
-                    head = chunk[:16]
-                total += len(chunk)
-                if total > max_bytes:
-                    raise HTTPException(status_code=400, detail="项目资料文件过大，上限 50MB")
-                output.write(chunk)
-                digest.update(chunk)
-        magic_error = storage.validate_magic("courseware", extension, head)
-        if magic_error:
-            raise HTTPException(status_code=400, detail=magic_error)
-        temp_path.replace(destination)
-        extracted_text, _, warning = extract_courseware(destination, extension.lstrip("."))
-        if not extracted_text.strip():
-            raise HTTPException(status_code=400, detail=warning or "未能从项目资料中提取文本")
         source = ProjectSource(
             project_id=project.id,
             original_filename=original_filename,
-            source_format=extension.lstrip("."),
+            source_format=destination.suffix.lstrip("."),
             file_path=str(destination),
             text_cached=extracted_text,
-            source_hash=digest.hexdigest(),
+            source_hash=source_hash,
             status="active",
         )
         db.add(source)
@@ -259,13 +316,89 @@ async def upload_project_source(
             "summary_refresh_required": True,
         }
     except HTTPException:
-        temp_path.unlink(missing_ok=True)
         destination.unlink(missing_ok=True)
         raise
     except Exception:
-        temp_path.unlink(missing_ok=True)
         destination.unlink(missing_ok=True)
         raise
+
+
+@router.put("/sources/{source_id}")
+async def replace_project_source(
+    source_id: int,
+    file: UploadFile,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    project = ensure_default_project(db)
+    source = db.query(ProjectSource).filter(
+        ProjectSource.id == source_id,
+        ProjectSource.project_id == project.id,
+        ProjectSource.status == "active",
+    ).first()
+    if source is None:
+        raise HTTPException(status_code=404, detail="课件不存在")
+    incoming_name = file.filename or ""
+    if unicodedata.normalize("NFC", incoming_name).casefold() != unicodedata.normalize(
+        "NFC", source.original_filename
+    ).casefold():
+        raise HTTPException(status_code=400, detail="覆盖文件必须与原课件同名")
+
+    new_path, extracted_text, source_hash, warning = await _store_source_upload(
+        file, project.project_key
+    )
+    if source_hash == source.source_hash:
+        new_path.unlink(missing_ok=True)
+        outline = db.query(ProjectSourceOutline).filter(
+            ProjectSourceOutline.source_id == source.id
+        ).first()
+        return {
+            "source": _serialize_source(source, outline),
+            "warning": warning,
+            "summary_refresh_required": False,
+            "affected_video_count": 0,
+            "unchanged": True,
+        }
+    old_path = Path(source.file_path)
+    try:
+        source.original_filename = incoming_name
+        source.source_format = new_path.suffix.lstrip(".")
+        source.file_path = str(new_path)
+        source.text_cached = extracted_text
+        source.source_hash = source_hash
+        outline = db.query(ProjectSourceOutline).filter(
+            ProjectSourceOutline.source_id == source.id
+        ).first()
+        if outline is not None:
+            outline.status = "stale"
+            db.add(outline)
+        affected = db.query(VideoKnowledge).filter(VideoKnowledge.source_id == source.id).all()
+        for knowledge in affected:
+            knowledge.knowledge_text_cached = None
+            knowledge.knowledge_text_path = None
+            knowledge.outline_text_cached = None
+            knowledge.outline_text_path = None
+            knowledge.outline_status = "empty"
+            db.add(knowledge)
+        db.add(source)
+        mark_published_stale(db, project.id)
+        db.commit()
+        db.refresh(source)
+    except Exception:
+        db.rollback()
+        new_path.unlink(missing_ok=True)
+        raise
+
+    root = source_storage_root()
+    resolved_old = old_path.resolve()
+    if resolved_old.is_relative_to(root) and resolved_old != new_path.resolve():
+        resolved_old.unlink(missing_ok=True)
+    return {
+        "source": _serialize_source(source, outline),
+        "warning": warning,
+        "summary_refresh_required": True,
+        "affected_video_count": len(affected),
+    }
 
 
 @router.delete("/sources/{source_id}")
@@ -316,6 +449,105 @@ def get_source_pages(
     if source.source_format != "pptx":
         raise HTTPException(status_code=400, detail="视频页区间当前仅支持 PPTX 课件")
     return {"source": _serialize_source(source), "pages": ppt_pages(source)}
+
+
+@router.post("/sources/{source_id}/outline/generate")
+async def generate_source_outline(
+    source_id: int,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    project = ensure_default_project(db)
+    source = db.query(ProjectSource).filter(
+        ProjectSource.id == source_id,
+        ProjectSource.project_id == project.id,
+        ProjectSource.status == "active",
+        ProjectSource.source_format == "pptx",
+    ).first()
+    if source is None:
+        raise HTTPException(status_code=404, detail="PPT 专栏不存在")
+    if not source.text_cached.strip():
+        raise HTTPException(status_code=400, detail="该课件没有可用于生成大纲的文本")
+    source_hash = source.source_hash
+    config = get_default_config(db)
+    if config is None:
+        raise HTTPException(status_code=400, detail="未配置大模型，请先完成模型配置")
+    api_key = decrypt_api_key(config.api_key_encrypted)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="大模型 API Key 无效")
+
+    outcome = RoutingOutcome()
+    async for _ in stream_model_chain(
+        db,
+        config,
+        api_key,
+        [
+            {"role": "system", "content": OUTLINE_SYSTEM_PROMPT},
+            {"role": "user", "content": source.text_cached},
+        ],
+        outcome,
+        stream_chat,
+        deadline_seconds=None,
+    ):
+        pass
+
+    db.expire_all()
+    current_source = db.query(ProjectSource).filter(
+        ProjectSource.id == source_id,
+        ProjectSource.project_id == project.id,
+        ProjectSource.status == "active",
+    ).first()
+    if current_source is None or current_source.source_hash != source_hash:
+        raise HTTPException(status_code=409, detail="课件已更新，本次生成结果未保存，请重新生成")
+    outline = db.query(ProjectSourceOutline).filter(
+        ProjectSourceOutline.source_id == source_id
+    ).first()
+    if outline is None:
+        outline = ProjectSourceOutline(source_id=source_id, source_hash=source_hash)
+    if not outcome.success or not outcome.answer.strip():
+        outline.status = "error"
+        outline.source_hash = source_hash
+        db.add(outline)
+        db.commit()
+        raise HTTPException(status_code=502, detail="专栏总大纲生成失败，请检查模型状态后重试")
+    outline.outline_text = outcome.answer.strip()
+    outline.status = "draft"
+    outline.source_hash = source_hash
+    db.add(outline)
+    db.commit()
+    db.refresh(outline)
+    return {"source": _serialize_source(current_source, outline)}
+
+
+@router.put("/sources/{source_id}/outline")
+def update_source_outline(
+    source_id: int,
+    body: SourceOutlineUpdate,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    project = ensure_default_project(db)
+    source = db.query(ProjectSource).filter(
+        ProjectSource.id == source_id,
+        ProjectSource.project_id == project.id,
+        ProjectSource.status == "active",
+        ProjectSource.source_format == "pptx",
+    ).first()
+    if source is None:
+        raise HTTPException(status_code=404, detail="PPT 专栏不存在")
+    outline = db.query(ProjectSourceOutline).filter(
+        ProjectSourceOutline.source_id == source_id
+    ).first()
+    if outline is None:
+        outline = ProjectSourceOutline(source_id=source_id)
+    text = body.outline_text.strip()
+    outline.outline_text = text
+    outline.status = "ready" if text else "empty"
+    outline.source_hash = source.source_hash
+    db.add(outline)
+    db.commit()
+    db.refresh(outline)
+    return {"source": _serialize_source(source, outline)}
 
 
 @router.put("/videos/{course_id}/course-type")
@@ -382,79 +614,6 @@ def build_video_knowledge(
     db.add(knowledge)
     db.commit()
     db.refresh(knowledge)
-    return {"video": _serialize_video_knowledge(material, knowledge, source)}
-
-
-@router.post("/videos/{course_id}/outline/generate")
-async def generate_video_outline(
-    course_id: str,
-    current: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    material = _get_material(db, course_id)
-    knowledge = ensure_video_knowledge(db, material)
-    if not (knowledge.knowledge_text_cached or "").strip():
-        raise HTTPException(status_code=400, detail="请先选择 PPT 页区间并生成课程知识文本")
-    if knowledge.course_type != "practice":
-        raise HTTPException(status_code=400, detail="理论/通用课程无需大纲，请先切换为实战/案例")
-    config = get_default_config(db)
-    if config is None:
-        raise HTTPException(status_code=400, detail="未配置大模型，请先完成模型配置")
-    api_key = decrypt_api_key(config.api_key_encrypted)
-    if not api_key:
-        raise HTTPException(status_code=400, detail="大模型 API Key 无效")
-    outcome = RoutingOutcome()
-    async for _ in stream_model_chain(
-        db,
-        config,
-        api_key,
-        [
-            {"role": "system", "content": OUTLINE_SYSTEM_PROMPT},
-            {"role": "user", "content": knowledge.knowledge_text_cached or ""},
-        ],
-        outcome,
-        stream_chat,
-        # 管理员生成任务先按真实模型耗时完整等待，后续再依据实测数据决定超时策略。
-        deadline_seconds=None,
-    ):
-        pass
-    if not outcome.success or not outcome.answer.strip():
-        knowledge.outline_status = "error"
-        db.add(knowledge)
-        db.commit()
-        raise HTTPException(status_code=502, detail="视频课程大纲生成失败，请检查模型状态后重试")
-    outline = outcome.answer.strip()
-    knowledge.outline_text_cached = outline
-    knowledge.outline_text_path = _knowledge_file(material, "course-outline.md", outline)
-    knowledge.outline_status = "draft"
-    db.add(knowledge)
-    db.commit()
-    db.refresh(knowledge)
-    source = db.get(ProjectSource, knowledge.source_id) if knowledge.source_id else None
-    return {"video": _serialize_video_knowledge(material, knowledge, source)}
-
-
-@router.put("/videos/{course_id}/outline")
-def update_video_outline(
-    course_id: str,
-    body: VideoOutlineUpdate,
-    current: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    material = _get_material(db, course_id)
-    knowledge = ensure_video_knowledge(db, material)
-    if knowledge.course_type != "practice":
-        raise HTTPException(status_code=400, detail="理论/通用课程不启用视频大纲")
-    if not (knowledge.knowledge_text_cached or "").strip():
-        raise HTTPException(status_code=400, detail="请先选择 PPT 页区间并生成课程知识文本")
-    outline = body.outline_text.strip()
-    knowledge.outline_text_cached = outline or None
-    knowledge.outline_text_path = _knowledge_file(material, "course-outline.md", outline)
-    knowledge.outline_status = "ready" if outline else "empty"
-    db.add(knowledge)
-    db.commit()
-    db.refresh(knowledge)
-    source = db.get(ProjectSource, knowledge.source_id) if knowledge.source_id else None
     return {"video": _serialize_video_knowledge(material, knowledge, source)}
 
 

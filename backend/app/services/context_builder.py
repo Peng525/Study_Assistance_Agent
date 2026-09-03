@@ -4,7 +4,7 @@
 1. 系统 prompt（助学者模板）
 2. 课件粗筛：有章节取前 3 章（Phase 0 简化，无 RAG 无法精确映射时间戳→章节）
 3. 逐字稿时间窗：选中字幕 ±3 分钟
-4. 多轮历史：最近 5 轮（10 条），超出丢最旧
+4. 多轮历史：最近 10 轮（20 条），更早内容由长期记忆摘要承接
 5. 当前提问
 6. Token 预检：28K/30K/32K 阈值截断/拒绝
 """
@@ -12,20 +12,26 @@
 SYSTEM_PROMPT = (
     "你是 AI 学习搭档，一位耐心的助学助手。请在内部判断问题属于项目问题、混合问题还是知识拓展，"
     "不要向用户展示分类标签。项目问题必须优先依据项目摘要、项目原始证据、当前视频资料和已审核逐字稿；"
-    "项目摘要与原始证据冲突时，以原始证据为准并指出资料可能需要更新。"
+    "专栏总大纲与当前视频课件原文冲突时，以课件原文为准并指出大纲可能需要更新。"
     "项目资料没有规定的事实必须明确说明，不得把通用建议伪装成项目现状；可以补充通用知识，"
     "但项目相关建议最终要回到当前项目。纯知识拓展可以直接解释通用知识。"
+    "课件用于提供当前课程语境、项目事实和案例线索，不是回答内容的上限，也不要把回答写成课件原文复述。"
+    "遇到理论、概念或原理类问题时，应按问题复杂度讲清其产生背景与要解决的问题、严格定义与边界、"
+    "内部机制或逻辑链、优点与局限、适用与不适用场景，并结合当前课件或项目给出实际案例；"
+    "专业解释之后，再用通俗语言或贴切类比重新解释一次。只有比较、流程或关系确实更清楚时才使用"
+    "简洁表格或文本流程图，不要为了形式强行制图。"
     "系统未提供联网搜索能力，不得声称已经搜索互联网。"
     "播放时间仅是定位锚点；没有逐字稿或时间轴证据时，不得声称知道该时间点具体声音或画面。"
-    "回答要准确、简洁、有结构；上下文不足时如实说明，不要编造。"
+    "回答要准确、简洁、有结构；使用简洁书面中文、短标题和自然段，避免输出多余的 Markdown 装饰符；"
+    "上下文不足时如实说明，不要编造。"
 )
 
 TIME_WINDOW_SECONDS = 180  # ±3 分钟
-MAX_HISTORY_ROUNDS = 5  # 最近 5 轮 = 10 条 messages
+MAX_HISTORY_ROUNDS = 10
 
 # Token 阈值（PRD 第 7.2 节）
-TOKEN_TRUNCATE_3 = 28_000  # >28K 截断到 3 轮
-TOKEN_TRUNCATE_1 = 30_000  # >30K 截断到 1 轮
+TOKEN_TRUNCATE_5 = 28_000
+TOKEN_TRUNCATE_2 = 30_000
 TOKEN_REJECT = 32_000  # >32K 拒绝
 
 
@@ -136,7 +142,8 @@ def _build_base_messages(
     *,
     project_summary: str = "",
     project_evidence: str = "",
-    video_outline: str = "",
+    column_outline: str = "",
+    memory_summary: str = "",
     video_context: str = "",
 ) -> list[dict]:
     """构造基础 messages（不含历史）。"""
@@ -146,10 +153,12 @@ def _build_base_messages(
         context_parts.append(f"【已审核项目背景摘要】\n{project_summary}")
     if video_context:
         context_parts.append(f"【当前视频元数据】\n{video_context}")
-    if video_outline:
-        context_parts.append(f"【当前视频课程大纲】\n{video_outline}")
+    if column_outline:
+        context_parts.append(f"【专栏总大纲】\n{column_outline}")
+    if memory_summary:
+        context_parts.append(f"【专栏长期对话记忆】\n{memory_summary}")
     if courseware_text:
-        context_parts.append(f"【当前视频补充课件】\n{courseware_text}")
+        context_parts.append(f"【当前视频课件原文】\n{courseware_text}")
     if project_evidence:
         context_parts.append(f"【项目原始证据】\n{project_evidence}")
     if transcript:
@@ -177,7 +186,8 @@ def build_context(
     video_duration: float | None = None,
     project_summary: str = "",
     project_evidence: str = "",
-    video_outline: str = "",
+    column_outline: str = "",
+    memory_summary: str = "",
     video_context: str = "",
 ) -> tuple[list[dict], str]:
     """构造完整 messages。返回 (messages, 提示信息)。
@@ -200,7 +210,8 @@ def build_context(
         question,
         project_summary=project_summary,
         project_evidence=project_evidence,
-        video_outline=video_outline,
+        column_outline=column_outline,
+        memory_summary=memory_summary,
         video_context=video_context,
     )
 
@@ -215,19 +226,18 @@ def build_context(
     total = sum(estimate_tokens(m["content"]) for m in messages)
 
     notice = ""
-    # Token 预检（PRD 阈值：>28K 截3轮，>30K 截1轮，>32K 拒绝）
+    # 优先保留专栏事实与当前视频课件，历史按 10 → 5 → 2 轮缩减。
     if total > TOKEN_REJECT:
-        # 尝试截断到 1 轮
-        messages = [base[0]] + list(history[-2:]) + [base[1]]
+        messages = [base[0]] + list(history[-4:]) + [base[1]]
         total = sum(estimate_tokens(m["content"]) for m in messages)
         if total > TOKEN_REJECT:
-            return [], "上下文超限，请清空会话或选择大上下文模型"
-        notice = "上下文过长，已精简历史到最近 1 轮"
-    elif total > TOKEN_TRUNCATE_1:
-        messages = [base[0]] + list(history[-2:]) + [base[1]]
-        notice = "上下文过长，已精简历史到最近 1 轮"
-    elif total > TOKEN_TRUNCATE_3:
-        messages = [base[0]] + list(history[-6:]) + [base[1]]
-        notice = "上下文过长，已精简历史到最近 3 轮"
+            return [], "当前专栏资料与视频课件超过模型上下文限制，请联系管理员精简资料"
+        notice = "上下文过长，本轮模型仅携带最近 2 轮对话；完整历史仍已保存"
+    elif total > TOKEN_TRUNCATE_2:
+        messages = [base[0]] + list(history[-4:]) + [base[1]]
+        notice = "上下文过长，本轮模型仅携带最近 2 轮对话；完整历史仍已保存"
+    elif total > TOKEN_TRUNCATE_5:
+        messages = [base[0]] + list(history[-10:]) + [base[1]]
+        notice = "上下文过长，本轮模型仅携带最近 5 轮对话；完整历史仍已保存"
 
     return messages, notice

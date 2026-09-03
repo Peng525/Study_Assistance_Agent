@@ -11,7 +11,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import create_media_ticket, decode_media_ticket
-from app.models.models import Material, User, VideoKnowledge
+from app.models.models import Material, ProjectSource, User, VideoKnowledge
 from app.services import whisper_service
 from app.services.context_builder import parse_vtt_cues
 
@@ -55,6 +55,13 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
             VideoKnowledge.material_id.in_([material.id for material in materials])
         ).all()
     } if materials else {}
+    source_ids = {
+        knowledge.source_id for knowledge in knowledge_by_material.values() if knowledge.source_id
+    }
+    source_names = {
+        source.id: source.original_filename
+        for source in db.query(ProjectSource).filter(ProjectSource.id.in_(source_ids)).all()
+    } if source_ids else {}
     return [
         {
             "course_id": m.course_id,
@@ -69,11 +76,10 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
                 if m.id in knowledge_by_material
                 else None
             ),
-            "outline_status": (
-                knowledge_by_material[m.id].outline_status
-                if m.id in knowledge_by_material
-                else None
-            ),
+            "source_id": knowledge_by_material[m.id].source_id if m.id in knowledge_by_material else None,
+            "source_filename": source_names.get(knowledge_by_material[m.id].source_id)
+            if m.id in knowledge_by_material
+            else None,
             "scanned_at": m.scanned_at.isoformat() if m.scanned_at else None,
         }
         for m in materials

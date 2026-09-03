@@ -25,7 +25,11 @@ interface MaterialRow {
   courseware_format?: string | null;
   subtitle_status?: string;
   course_type?: "theory" | "practice" | null;
+  source_id?: number | null;
+  source_filename?: string | null;
 }
+
+interface ColumnOption { id: number; filename: string; column_name: string; format: string; }
 
 const FILE_TYPES = [
   { value: "video", label: "视频（mp4/webm）" },
@@ -35,6 +39,7 @@ const FILE_TYPES = [
 
 export default function Materials() {
   const [list, setList] = useState<MaterialRow[]>([]);
+  const [columnsList, setColumnsList] = useState<ColumnOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
@@ -45,9 +50,11 @@ export default function Materials() {
 
   const load = () => {
     setLoading(true);
-    api
-      .get("/materials")
-      .then((r) => setList(r.data))
+    Promise.all([api.get("/materials"), api.get("/admin/project-context")])
+      .then(([materials, context]) => {
+        setList(materials.data);
+        setColumnsList(context.data.sources.filter((item: ColumnOption) => item.format === "pptx"));
+      })
       .finally(() => setLoading(false));
   };
 
@@ -59,6 +66,7 @@ export default function Materials() {
     fileType: string,
     file: File,
     courseType: "theory" | "practice" = "theory",
+    sourceId?: number,
   ) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -66,7 +74,7 @@ export default function Materials() {
     setProgress(0);
     try {
       await api.post(
-        `/admin/materials/upload?course_id=${encodeURIComponent(courseId)}&file_type=${fileType}&course_type=${courseType}`,
+        `/admin/materials/upload?course_id=${encodeURIComponent(courseId)}&file_type=${fileType}&course_type=${courseType}${sourceId ? `&source_id=${sourceId}` : ""}`,
         fd,
         {
         headers: { "Content-Type": "multipart/form-data" },
@@ -88,13 +96,13 @@ export default function Materials() {
   };
 
   const doUpload = async () => {
-    const { course_id, file_type, course_type } = await uploadForm.validateFields();
+    const { course_id, file_type, course_type, source_id } = await uploadForm.validateFields();
     const file = fileList[0]?.originFileObj || fileList[0];
     if (!file) {
       message.warning("请选择文件");
       return;
     }
-    const ok = await uploadFile(course_id, file_type, file, course_type || "theory");
+    const ok = await uploadFile(course_id, file_type, file, course_type || "theory", source_id);
     if (ok) {
       setUploadOpen(false);
       setFileList([]);
@@ -162,6 +170,7 @@ export default function Materials() {
         </Tag>
       ),
     },
+    { title: "所属专栏", dataIndex: "source_filename", render: (value: string) => value || "待归类" },
     { title: "错误信息", dataIndex: "error_message", ellipsis: true, render: (v: string) => v || "—" },
     {
       title: "操作",
@@ -211,19 +220,27 @@ export default function Materials() {
             <Select options={FILE_TYPES} />
           </Form.Item>
           {uploadFileType === "video" && (
-            <Form.Item
-              name="course_type"
-              label="课程类型"
-              extra="理论/通用课程默认不生成也不向 AI 发送大纲；实战/案例课程可在专栏知识页按 PPT 页区间生成。"
-              rules={[{ required: true }]}
-            >
-              <Select
-                options={[
-                  { value: "theory", label: "理论/通用（不生成大纲）" },
-                  { value: "practice", label: "实战/案例（后续可生成视频大纲）" },
-                ]}
-              />
-            </Form.Item>
+            <>
+              <Form.Item
+                name="source_id"
+                label="所属专栏"
+                extra={columnsList.length ? "视频上传后会直接归入所选 PPT 专栏。" : "还没有 PPT 专栏，请先到“专栏管理 → 上传课件”。"}
+                rules={[{ required: true, message: "请选择所属专栏" }]}
+              >
+                <Select
+                  placeholder="选择 PPT 专栏"
+                  options={columnsList.map((item) => ({ value: item.id, label: item.column_name || item.filename }))}
+                />
+              </Form.Item>
+              <Form.Item
+                name="course_type"
+                label="课程类型"
+                extra="仅用于管理分类；理论和实战都会使用专栏总大纲与当前视频课件原文。"
+                rules={[{ required: true }]}
+              >
+                <Select options={[{ value: "theory", label: "理论/通用" }, { value: "practice", label: "实战/案例" }]} />
+              </Form.Item>
+            </>
           )}
           <Form.Item label="文件" required>
             <Upload
