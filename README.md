@@ -1,89 +1,203 @@
 # AI 助学助手（Study Assistance Agent）
 
-一个本地运行的 AI 助学产品：播放自备课程视频，选中字幕右键向 AI 提问，AI 结合课件与逐字稿时间窗答疑，支持多轮追问。管理员通过本地管理台配置大模型、上传素材、管理用户。
+看课程视频时遇到疑问，不离开播放器就能向 AI 提问，并得到**结合本项目背景**的回答，而不是一段放之四海皆准的通用知识。
+
+管理员上传资料后由 AI 生成项目背景草稿，人工审核发布；用户提问时，系统把已审核的项目事实、当前视频课件、字幕时间窗与最近对话组装成上下文，再交给大模型流式作答。每一次回答用到哪个版本的背景、哪些证据块、哪个模型，都会记进后台日志。
+
+---
+
+## 这个版本能做什么 / 不做什么
+
+**能做**
+
+- 视频正常播放（大文件走原生 Range，不整段下载）
+- 无字幕也能提问，得到项目级回答
+- 有已审核字幕时，自动带上当前时间点 ±3 分钟的逐字稿
+- 多轮追问，新会话用最新发布的背景版本，进行中的会话固定旧版本
+- 一个 API Key 配多条模型链，额度耗尽、限流或服务故障时自动降级
+- 后台查看每次调用的模型、耗时、证据与错误
+
+**明确不做**
+
+- 不声称"看懂了画面"或"听见了声音"——没有字幕证据时，系统提示词禁止模型假装理解该时间点的内容
+- 未审核的资料不会悄悄进入问答
+- 不联网搜索，也不伪装成搜索过
+
+---
+
+## 核心链路
+
+```
+管理员上传批准资料
+   → AI 生成项目背景 Summary 草稿
+   → 人工编辑并发布（生成不可变版本）
+   → 用户播放视频（短期票据换取播放地址，走原生 Range 206）
+   → 提问时自动携带当前时间、真实时长与视频元数据
+   → 系统组装分层上下文（回答规则 / 项目背景 / 视频元数据 / 课件 / 证据块 / 字幕时间窗 / 最近 5 轮）
+   → 模型链流式回答
+   → 后台记录版本、证据块、耗时与最终模型
+```
+
+---
 
 ## 技术栈
 
-- **前端**：React 18 + Vite + TypeScript + Ant Design 5 + Zustand + ArtPlayer
-- **后端**：Python FastAPI + SQLAlchemy 2.x + SQLite
-- **大模型**：OpenAI 兼容协议（默认阿里云百炼 / 通义千问），后端 SSE 代理
-- **上下文策略**：字幕时间窗截取（±3 分钟）+ 课件章节粗筛（不上 RAG）
-- **自动字幕**：Whisper（medium 模型，视频无字幕时自动生成）
+| 层 | 选型 | 为什么 |
+| --- | --- | --- |
+| 前端 | React 18 + Vite + TypeScript + Ant Design 5 + Zustand | 单机 SPA 不需要 SSR，Vite 启动快 |
+| 播放器 | ArtPlayer + 自定义字幕渲染层 | 不用原生 `<track>`，跨浏览器选中行为不可控 |
+| 后端 | Python FastAPI + SQLAlchemy 2.x + SQLite | 原生 async 与 SSE，零外部依赖，本地一键启动 |
+| 检索 | SQLite FTS5（trigram） | 资料大时才需要检索，中文术语够用，不引入向量库 |
+| 大模型 | 任意 OpenAI 兼容接口（默认阿里云百炼 / 通义千问） | 后端代理并做多模型降级 |
+| 自动字幕 | Whisper（medium） | 本地生成，零调用成本；视频没有字幕时才用 |
+
+---
 
 ## 目录结构
 
 ```
 助学demo/
-├── frontend/          # 前端（React + Vite）
-│   └── src/
-│       ├── api/       # axios 客户端（JWT 拦截器）
-│       ├── store/     # Zustand（认证 / 主题）
-│       ├── components/ # 字幕层 / AI 侧边栏 / 课程卡片 / 顶部导航
-│       └── pages/     # 登录 / 首页 / 课程列表 / 播放页 / 管理台
-├── backend/           # 后端（FastAPI）
-│   ├── app/
-│   │   ├── api/       # 路由（auth / materials / chat / admin）
-│   │   ├── core/      # 配置 / 数据库 / 安全 / seed
-│   │   ├── models/    # ORM 模型（5 张表）
-│   │   └── services/  # 字幕 / 课件 / 存储 / Whisper / context_builder / llm
-│   └── tests/         # pytest 单元测试
-└── .env               # 环境变量（本地，不提交）
+├── frontend/src/
+│   ├── api/           # axios 客户端（携带 JWT，401 自动跳登录）
+│   ├── store/         # Zustand：认证 / 主题 / 学习进度
+│   ├── components/    # 字幕层 / AI 侧边栏 / 课程卡片 / 顶部导航 / 路由守卫
+│   └── pages/
+│       ├── Login / Home / CourseList / Player    # 学习端
+│       └── admin/     # 仪表盘 / 项目上下文 / 模型配置 / 素材管理 / 用户管理 / 调用日志
+├── backend/app/
+│   ├── api/           # 10 个路由模块
+│   ├── core/          # 配置 / 数据库 / 安全（bcrypt + JWT + AES-GCM）/ seed
+│   ├── models/        # ORM 模型
+│   └── services/      # 见下表
+└── backend/tests/     # pytest
 ```
+
+**后端服务模块**
+
+| 模块 | 职责 |
+| --- | --- |
+| `project_context` | 项目背景版本治理：资料准入、草稿—审核—发布、FTS5 分块与证据选择 |
+| `model_router` | 多模型优先级链、冷却与失败计数、额度/限流/故障自动降级 |
+| `context_builder` | 分层上下文组装与 Token 预算控制 |
+| `llm_client` | OpenAI 兼容流式调用与错误友好化 |
+| `llm_audit` | 调用日志与审计元数据落库 |
+| `storage` / `courseware` / `subtitle` | 素材上传校验、md/pdf/pptx 文本提取、srt→vtt |
+| `whisper_service` | 异步字幕生成（串行队列 + 状态轮询） |
+
+---
 
 ## 快速开始
 
-### 1. 后端
+### 一键启动（Windows）
+
+双击项目根目录的 `启动助学助手.bat`。它会在**单个窗口**里同时拉起前后端，日志以 `[BACKEND]` / `[FRONTEND]` 前缀区分，`Ctrl+C` 一次停掉全部。
+
+### 手动启动
 
 ```bash
+# 后端（端口 8080）
 cd backend
-python -m venv venv
-# Windows: venv\Scripts\activate   Linux/macOS: source venv/bin/activate
+python -m venv venv && venv\Scripts\activate      # Linux/macOS: source venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
+uvicorn app.main:app --host 127.0.0.1 --port 8080
 
-首次启动自动建表并 seed 两个账号：`admin/123456`（管理员）、`user25/123456`（学习者）。
-
-> 可选：安装 Whisper 自动字幕 `pip install openai-whisper`（需系统装有 ffmpeg）。
-
-### 2. 前端
-
-```bash
+# 前端（端口 5173，已配置 /api 代理到 8080）
 cd frontend
 npm install
-npm run dev    # http://localhost:5173
+npm run dev
 ```
 
-前端 Vite 已配置 `/api` 代理到 `http://127.0.0.1:8000`。
+首次启动自动建表并 seed 两个账号：
 
-### 3. 配置大模型
+| 账号 | 密码 | 角色 |
+| --- | --- | --- |
+| `admin` | `123456` | 管理员，登录后直接进管理后台 |
+| `user25` | `123456` | 学习者，看不到管理后台入口 |
 
-1. 用 `admin/123456` 登录 → 进入管理后台 → 模型配置
-2. 新增配置（Base URL + API Key + 模型名），设为默认
-3. 阿里云百炼默认：Base URL `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen-plus`
+> 原 8000 端口容易与 IIS、Skype 等冲突，已改为 **8080**；`vite.config.ts` 的代理与启动脚本保持同步。
 
-### 4. 上传素材
+### 跑起来之后
 
-1. 管理后台 → 素材管理 → 上传文件
-2. 上传视频（mp4/webm）+ 字幕（vtt/srt，无字幕自动 Whisper 生成）+ 课件（md/pdf/pptx）
-3. 回到首页 → 点击课程 → 播放 → 选中字幕右键提问
+1. `admin` 登录 → **模型配置**：填 Base URL / API Key / 模型名，可导入预设模型链并设置优先级
+2. **项目上下文**：上传 md / pdf / pptx 资料 → 让 AI 生成 Summary 草稿 → 检查后**发布**
+3. **素材管理**：上传视频，配字幕（vtt/srt，没有就让它用 Whisper 生成）和课件
+4. 换 `user25` 登录 → 选课 → 播放 → 选中字幕右键提问，或从右上角打开 AI 对话栏
 
-## 运行测试
+---
 
-```bash
-# 后端
-cd backend && pytest tests/
+## 架构亮点
 
-# 前端
-cd frontend && npm test
-```
+**项目背景走版本治理，不是一个随时改的 Prompt**
+AI 只生成草稿，人工审核后才发布为不可变版本。资料变动后，当前发布版被标记为待更新，但**旧版本继续服务**，直到新版发布。新会话用最新版，进行中的会话固定原版本，避免同一次追问里事实漂移。
 
-## 核心交互链路
+**证据选择按资料规模分级，不提前上向量库**
 
-播放视频 → 暂停 → 选中字幕 → 右键 → "以此段字幕向 AI 提问" → AI 结合课件+逐字稿时间窗流式答疑 → 多轮追问
+| 资料规模 | 策略 |
+| --- | --- |
+| 小（约 12K Token 以内） | 全文注入，不漏召回，实现透明 |
+| 大 | 按标题 / 页分块，FTS5 trigram 召回 |
+| 未来触发条件 | 召回率不足、频繁截断、多项目或需要精确引用时，再引入向量检索与重排 |
 
-字幕选中降级：L1 选中文本 / L2 整条字幕 / L3 时间戳 / L4 手动输入兜底。
+复杂度由数据证明，不靠提前猜测。
+
+**无字幕也要诚实**
+播放器每次提问都带上 `current_time` 与真实 `duration`。没有字幕时，这两个字段只做锚点与审计，系统提示词明确禁止模型声称理解该秒的声音或画面；只有已审核字幕存在，才把 ±3 分钟逐字稿放进上下文。
+
+**大视频走票据 + 原生 Range，不下载整段 Blob**
+早期实现用 `fetch` 拿完整视频 Blob 再交给播放器，约 300 MB 的文件首帧要等接近整段下载时间。改为前端先用 JWT 换取绑定用户、课程和有效期的短期票据，播放器直接加载票据 URL，后端继续响应 206 Partial Content。票据不含 API Key，串课或过期都会被拒。
+
+**所有回答可追溯**
+每次调用记录：使用的背景版本、命中的证据块、时间锚点、实际生效的模型、耗时与错误类型。审计元数据写进后台，不展示给学习者。
+
+---
+
+## 交互细节
+
+- **AI 侧边栏默认占半屏**，可拖拽调节（30% ~ 50%，左拖到底也不会挤占视频区），宽度记在本地，支持键盘方向键微调
+- 窗口宽度小于 720px 时，AI 栏自动降级为全屏浮层
+- 输入框自适应 2~5 行：Enter 发送、Shift+Enter 换行、中文输入法选词时不会误发
+- 回答支持 Markdown + GFM 渲染（代码、表格、引用、列表）
+- 字幕选中四级降级：选中文本 → 整条字幕 → 时间戳 → 手动输入兜底
+- 视频主题三档：浅色 / 深色 / 跟随系统
+
+---
+
+## 测试
+
+| 范围 | 数量 | 命令 |
+| --- | --- | --- |
+| 后端 pytest | 175 项 | `cd backend && pytest tests -q` |
+| 前端 Vitest | 59 项 | `cd frontend && npm test` |
+
+覆盖分层上下文组装、背景版本治理与发布拦截、FTS5 召回、模型链降级、票据与 Range、角色隔离、字幕降级等。测试全程使用 fake LLM 与模拟媒体请求，不消耗真实额度。
+
+---
+
+## 路线图（本版尚未包含）
+
+- 专栏与视频系列管理
+- 课程类型配置（实战课配大纲 + 字幕，理论课配大纲 + 课件原文）
+- 用户侧按课件页数查看原文
+- 学习者提问的错题与薄弱知识点统计
+- 真实字幕质量的批量人工校验
+
+---
 
 ## 环境变量
 
-复制 `.env.example` 为 `.env`，填写大模型 API Key 等信息（`.env` 已被 gitignore 排除）。
+复制 `.env.example` 为 `.env` 后填写（`.env` 已被 gitignore 排除）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL_NAME` | 默认大模型连接信息，也可在管理台配置 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理员初始账号 |
+| `USER_USERNAME` / `USER_PASSWORD` | 学习者初始账号 |
+| `APP_PORT` | 后端端口，默认 8080 |
+| `JWT_SECRET` | JWT 签名密钥 |
+| `DEBUG` | 调试模式 |
+
+---
+
+## 许可
+
+MIT
