@@ -80,7 +80,6 @@ describe("AI 侧栏模型降级", () => {
         `data: ${JSON.stringify({ done: true, model_name: "qwen-plus" })}\n\n`,
     );
     let read = false;
-    const onContextConsumed = vi.fn();
     const fetchMock = vi.fn().mockImplementation((input: string) => {
       if (String(input).includes("column-session")) return Promise.resolve(historyResponse());
       return Promise.resolve({
@@ -98,27 +97,24 @@ describe("AI 侧栏模型降级", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
-      <AISidebar
-        courseId="course-1"
-        currentTime={42.5}
-        videoDuration={600}
-        onContextConsumed={onContextConsumed}
-      />,
-    );
+    render(<AISidebar courseId="course-1" currentTime={42.5} videoDuration={600} />);
     await waitFor(() => expect(screen.getByRole("button", { name: /发\s*送/ })).not.toBeDisabled());
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "这个项目为什么这样设计？" } });
     fireEvent.click(screen.getByRole("button", { name: /发\s*送/ }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const request = fetchMock.mock.calls[1][1] as RequestInit;
+    // A3：无主动引用时 start/end 是 Anchor 区间（null），播放位置走 current_time。
+    // E3：不再调用 onContextConsumed（连续追问丢失引用的根因已移除）。
     expect(JSON.parse(String(request.body))).toMatchObject({
       course_id: "course-1",
-      start_time: 42.5,
-      end_time: 42.5,
+      selected_subtitle: "",
+      start_time: null,
+      end_time: null,
+      current_time: 42.5,
       video_duration: 600,
     });
-    expect(onContextConsumed).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(request.body))).not.toHaveProperty("onContextConsumed");
   });
 
   it("流中断时清空残片并显示下级模型完整答案", async () => {

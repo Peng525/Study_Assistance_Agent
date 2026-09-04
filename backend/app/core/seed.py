@@ -1,11 +1,16 @@
 """数据库初始化与首次启动 seed。"""
 
+import logging
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import Base, engine
+from app.core.migrations import run_migrations
 from app.core.security import encrypt_api_key, hash_password
 from app.models.models import ModelConfig, SystemSetting, User
+
+logger = logging.getLogger(__name__)
 
 
 MODEL_CONFIG_IMPORT_KEY = "llm_env_import_v1"
@@ -14,8 +19,15 @@ _API_KEY_PLACEHOLDERS = {"your-api-key-here"}
 
 
 def create_tables() -> None:
-    """建表（若不存在）。"""
+    """建表（若不存在）+ 幂等补列。
+
+    `create_all()` 只建新表、不补列，所以新增字段必须走 `run_migrations()`
+    （见 app/core/migrations.py）。两者顺序不能颠倒。
+    """
     Base.metadata.create_all(bind=engine)
+    applied = run_migrations(engine)
+    if applied:
+        logger.info("启动迁移已执行: %s", ", ".join(applied))
 
 
 def seed_users(db: Session) -> None:

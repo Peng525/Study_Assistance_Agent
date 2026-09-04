@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     # 素材目录
     materials_dir: str = "./materials"
 
+    # ---- 字幕生成（faster-whisper）----
+    # 模型尺寸：tiny/base/small/medium/large-v3。
+    # Demo 验证阶段默认 small（约 480MB）；中文质量不够时改 medium（约 1.5GB），无需改代码。
+    whisper_model_size: str = "small"
+    # 推理设备：auto（有 CUDA 就用 GPU，否则 CPU）/ cpu / cuda
+    whisper_device: str = "auto"
+    # 计算精度：default（GPU 用 float16，CPU 用 int8）/ int8 / float16 / float32
+    whisper_compute_type: str = "default"
+    # 转写语言：zh 表示中文；空字符串表示让模型自动检测
+    whisper_language: str = "zh"
+
     # 项目共享知识资料（与课程素材目录隔离，避免被课程扫描器误识别）
     project_context_dir: str = "./project_context"
 

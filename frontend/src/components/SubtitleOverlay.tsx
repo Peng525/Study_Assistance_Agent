@@ -11,6 +11,8 @@ interface SubtitleOverlayProps {
   currentTime: number;
   cues: Cue[];
   onCueChange?: (cue: Cue | null) => void;
+  /**CC 开关：false 时隐藏字幕显示，但 currentCue 仍持续计算（L2/L4 依赖它）。*/
+  visible?: boolean;
 }
 
 // 解析 VTT 文本
@@ -45,7 +47,12 @@ export function tsToSeconds(ts: string): number {
   return parts[0] || 0;
 }
 
-export default function SubtitleOverlay({ currentTime, cues, onCueChange }: SubtitleOverlayProps) {
+export default function SubtitleOverlay({
+  currentTime,
+  cues,
+  onCueChange,
+  visible = true,
+}: SubtitleOverlayProps) {
   const [currentCue, setCurrentCue] = useState<Cue | null>(null);
   const cueRef = useRef<HTMLDivElement>(null);
 
@@ -55,7 +62,9 @@ export default function SubtitleOverlay({ currentTime, cues, onCueChange }: Subt
     onCueChange?.(cue);
   }, [currentTime, cues, onCueChange]);
 
-  if (!currentCue) return null;
+  // 注意：currentCue 的更新（上面的 effect）不依赖 visible —— CC 关掉时仍要计算，
+  // 否则 L2 整条字幕引用与 L4「插入当前字幕」会失效。
+  if (!currentCue || !visible) return null;
 
   return (
     <div

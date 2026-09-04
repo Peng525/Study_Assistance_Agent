@@ -12,6 +12,22 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ---- 字幕审核状态（A3）----
+# 与 subtitle_status 正交分工，不要混成一个字段：
+#   subtitle_status  字幕「有没有生成好」  pending / generating / ready / error
+#   review_state     字幕「能不能作为自动 AI 证据」  unreviewed / reviewed
+# 生成完成（ready）不等于审核通过（reviewed）；
+# 未审核的字幕允许展示、允许被用户主动引用，但**不得**自动注入 ±180 秒 Transcript Context。
+SUBTITLE_REVIEW_UNREVIEWED = "unreviewed"
+SUBTITLE_REVIEW_REVIEWED = "reviewed"
+
+# 字幕生成状态
+SUBTITLE_STATUS_PENDING = "pending"
+SUBTITLE_STATUS_GENERATING = "generating"
+SUBTITLE_STATUS_READY = "ready"
+SUBTITLE_STATUS_ERROR = "error"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -73,9 +89,14 @@ class Material(Base):
     video_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     subtitle_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     subtitle_source_format: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'vtt'|'srt'
-    subtitle_status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)  # pending/generating/ready/error
+    subtitle_status: Mapped[str] = mapped_column(String(16), default=SUBTITLE_STATUS_PENDING, nullable=False)  # pending/generating/ready/error
     subtitle_source: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'manual'|'whisper'
     subtitle_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A3：字幕审核状态。与 subtitle_status 正交，详见模块顶部常量说明。
+    # 默认 unreviewed —— 生成的和手动上传的都要审核后才解锁自动 Transcript Context 注入。
+    review_state: Mapped[str] = mapped_column(
+        String(16), default=SUBTITLE_REVIEW_UNREVIEWED, nullable=False
+    )
     courseware_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     courseware_format: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'md'|'pdf'|'pptx'
     courseware_text_cached: Mapped[str | None] = mapped_column(Text, nullable=True)

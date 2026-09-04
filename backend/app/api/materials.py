@@ -69,6 +69,9 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
             "error_message": m.error_message,
             "courseware_format": m.courseware_format,
             "subtitle_status": m.subtitle_status,
+            # A3：字幕审核状态（unreviewed/reviewed）。与 subtitle_status 正交，
+            # 仅 ready+reviewed 才解锁自动 Transcript Context 注入。
+            "review_state": m.review_state,
             "title": _extract_title(m.courseware_text_cached),
             "duration": _extract_duration(m.subtitle_path),
             "course_type": (
@@ -98,6 +101,7 @@ def get_material(course_id: str, current: User = Depends(get_current_user), db: 
         "status": material.status,
         "courseware_format": material.courseware_format,
         "subtitle_status": material.subtitle_status,
+        "review_state": material.review_state,
         "course_type": (
             db.query(VideoKnowledge.course_type)
             .filter(VideoKnowledge.material_id == material.id)
@@ -174,5 +178,6 @@ def get_subtitle_status(course_id: str, current: User = Depends(get_current_user
     return {
         "course_id": course_id,
         "subtitle_status": material.subtitle_status,
+        "review_state": material.review_state,
         **status,
     }

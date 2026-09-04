@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
@@ -14,9 +15,23 @@ from app.services import storage
 from app.services import whisper_service
 from app.services.courseware import extract_courseware
 from app.services.project_context import bind_material, ensure_default_project, ensure_video_knowledge
-from app.services.subtitle import detect_unsupported_format, srt_to_vtt
+from app.services.context_builder import parse_vtt_cues
+from app.services.subtitle import cue_revision, cues_to_vtt, detect_unsupported_format, srt_to_vtt, validate_cues
 
 router = APIRouter(prefix="/api/admin/materials", tags=["admin-materials"])
+
+
+class SubtitleReviewRequest(BaseModel):
+    """管理员审核字幕：标记 reviewed 解锁自动证据，或回退 unreviewed。"""
+
+    review_state: str  # 'reviewed' | 'unreviewed'
+
+
+class SubtitleCuesRequest(BaseModel):
+    """保存编辑后的字幕 cues（P4 编辑器写回）。revision 为乐观锁指纹。"""
+
+    cues: list[dict]
+    revision: str  # 必须等于当前 VTT 的 sha1[:8]，否则 409 冲突
 
 _ORIGINAL_FIELD = {
     "video": "video_original_filename",
@@ -242,18 +257,121 @@ def cancel_subtitle(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """取消排队中的生成任务（仅 pending）。"""
+    """取消生成任务：排队中（pending）或生成中（generating）均可取消。"""
     status = whisper_service.get_status(course_id)
-    if status["status"] != "pending":
-        raise HTTPException(status_code=400, detail="仅排队中的任务可取消")
+    if status["status"] not in ("pending", "generating"):
+        raise HTTPException(status_code=400, detail="仅排队中或生成中的任务可取消")
     cancelled = whisper_service.cancel(course_id)
     if cancelled:
         material = db.query(Material).filter(Material.course_id == course_id).first()
         if material:
-            material.subtitle_status = "pending"
-            material.subtitle_source = None
+            # generating 取消由 worker 最终写回 error；pending 取消直接复位
+            if status["status"] == "pending":
+                material.subtitle_status = "pending"
+                material.subtitle_source = None
             db.commit()
     return {"message": "已取消"}
+
+
+@router.post("/{course_id}/subtitle/review")
+def review_subtitle(
+    course_id: str,
+    body: SubtitleReviewRequest,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """标记字幕审核状态：reviewed 解锁自动 Transcript Context 注入；unreviewed 回退。
+
+    ⚠️ 措辞纪律：不要用「生成即生效」。生成完成（ready）只代表允许展示/主动引用，
+    未审核（unreviewed）前不得自动作为 AI 证据。
+    """
+    if body.review_state not in ("reviewed", "unreviewed"):
+        raise HTTPException(status_code=400, detail="review_state 仅支持 reviewed / unreviewed")
+    material = db.query(Material).filter(Material.course_id == course_id).first()
+    if material is None:
+        raise HTTPException(status_code=404, detail="课程不存在")
+    # 只有真实生成/上传好（ready）的字幕才有审核意义；generating/pending/error 不让标记。
+    if material.subtitle_status != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail="字幕尚未生成完成，无法审核（仅 subtitle_status=ready 可审核）",
+        )
+    material.review_state = body.review_state
+    db.commit()
+    return {
+        "course_id": course_id,
+        "subtitle_status": material.subtitle_status,
+        "review_state": material.review_state,
+    }
+
+
+@router.get("/{course_id}/subtitle/cues")
+def get_subtitle_cues(
+    course_id: str,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """读取当前字幕的 cues（供编辑器/P5 预览加载）。返回 cues + revision 乐观锁指纹。"""
+    material = db.query(Material).filter(Material.course_id == course_id).first()
+    if material is None:
+        raise HTTPException(status_code=404, detail="课程不存在")
+    if not material.subtitle_path or not Path(material.subtitle_path).exists():
+        raise HTTPException(status_code=404, detail="字幕文件不存在")
+    text = Path(material.subtitle_path).read_text(encoding="utf-8")
+    return {
+        "course_id": course_id,
+        "subtitle_status": material.subtitle_status,
+        "review_state": material.review_state,
+        "revision": cue_revision(text),
+        "cues": parse_vtt_cues(text),
+    }
+
+
+@router.put("/{course_id}/subtitle/cues")
+def save_subtitle_cues(
+    course_id: str,
+    body: SubtitleCuesRequest,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """保存编辑后的字幕 cues（P4 编辑器写回）。
+
+    - 乐观锁：body.revision 必须等于当前 VTT 的 sha1[:8]，否则 409 冲突（前端重新拉取再保存）；
+    - 时间轴校验（前后端都做）：非法时间轴会让播放器崩溃，校验失败 400；
+    - 编辑使旧审核失效：review_state 复位 unreviewed（改过的字幕需重新人工抽查）。
+    """
+    material = db.query(Material).filter(Material.course_id == course_id).first()
+    if material is None:
+        raise HTTPException(status_code=404, detail="课程不存在")
+    if not material.subtitle_path or not Path(material.subtitle_path).exists():
+        raise HTTPException(status_code=400, detail="字幕文件不存在，无法编辑")
+
+    text = Path(material.subtitle_path).read_text(encoding="utf-8")
+    current_rev = cue_revision(text)
+    if body.revision != current_rev:
+        raise HTTPException(
+            status_code=409,
+            detail=f"字幕已被改动（revision 不匹配，当前 {current_rev}），请重新拉取后再保存",
+        )
+
+    err = validate_cues(body.cues)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    new_vtt = cues_to_vtt(body.cues)
+    path = Path(material.subtitle_path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(new_vtt, encoding="utf-8")
+    tmp.replace(path)  # 原子写回
+
+    material.review_state = "unreviewed"  # 编辑使旧审核失效
+    db.commit()
+    return {
+        "course_id": course_id,
+        "subtitle_status": material.subtitle_status,
+        "review_state": material.review_state,
+        "revision": cue_revision(new_vtt),
+    }
 
 
 @router.get("/whisper/model-status")

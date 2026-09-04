@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { Dropdown, message, Spin } from "antd";
 import Artplayer from "artplayer";
 import TopNav from "../components/TopNav";
 import SubtitleOverlay, { Cue, parseVTT } from "../components/SubtitleOverlay";
 import AISidebar from "../components/AISidebar";
+import { Citation } from "../components/CitationCard";
 import { getToken } from "../store/auth";
 import { loadProgress, saveProgress } from "../store/progress";
+import { loadCcVisible, saveCcVisible } from "../store/subtitlePrefs";
 
 const AI_WIDTH_KEY = "ai-study-sidebar-width";
 const MIN_AI_WIDTH = 30;
@@ -19,7 +21,8 @@ function clampAiWidth(value: number) {
 
 function loadAiWidth() {
   const saved = Number(localStorage.getItem(AI_WIDTH_KEY));
-  return Number.isFinite(saved) && saved > 0 ? clampAiWidth(saved) : 50;
+  // E1：默认宽度从 50 降到 40（Demo v1.0 侧边栏默认收起、占屏更小）
+  return Number.isFinite(saved) && saved > 0 ? clampAiWidth(saved) : 40;
 }
 
 // 右键菜单状态
@@ -35,6 +38,9 @@ interface MenuState {
 
 export default function Player() {
   const { courseId } = useParams<{ courseId: string }>();
+  const [searchParams] = useSearchParams();
+  // P4 编辑器「定位」按钮带 t 参数跳转，加载后直接 seek 到该时间点（ArtPlayer 对照）
+  const seekTo = Number(searchParams.get("t")) || 0;
   const artRef = useRef<Artplayer | null>(null);
   const videoRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -44,15 +50,24 @@ export default function Player() {
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const [currentCue, setCurrentCue] = useState<Cue | null>(null);
-  const [aiExpanded, setAiExpanded] = useState(true);
+  // E1：侧边栏默认收起（AC-SUB-001）。顶部导航的「AI 对话」按钮可重新展开。
+  const [aiExpanded, setAiExpanded] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [prefill, setPrefill] = useState("");
-  const [selSubtitle, setSelSubtitle] = useState("");
-  const [selTime, setSelTime] = useState<number | null>(null);
+  // E3：用户主动引用的字幕（Active Citation）。null = 仅用播放位置。
+  const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
+  // E2：CC（字幕）开关。默认显示（localStorage 持久化）。
+  const [ccVisible, setCcVisible] = useState(loadCcVisible());
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoError, setVideoError] = useState("");
   const [aiWidth, setAiWidth] = useState(aiWidthRef.current);
   const [resizing, setResizing] = useState(false);
+
+  // CC 控件桥接：命令式创建的 ArtPlayer 控件要用 ref 拿元素与最新值，避免闭包读到旧值
+  const ccVisibleRef = useRef(ccVisible);
+  ccVisibleRef.current = ccVisible;
+  const ccControlElRef = useRef<HTMLElement | null>(null);
+  const hasSubtitleRef = useRef(false);
+  hasSubtitleRef.current = cues.length > 0;
 
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspaceRef.current?.getBoundingClientRect();
@@ -130,11 +145,37 @@ export default function Player() {
         });
         art = player;
         artRef.current = player;
+
+        // E2：CC 开关注入播放器控制栏（音量/设置/全屏同一行，index:25）。
+        // 否决右上角浮层——那是产品需求被实现成本偷偷降级，PRD 原文就要求放控制区。
+        player.controls.add({
+          name: "cc",
+          position: "right",
+          index: 25,
+          tooltip: ccVisibleRef.current ? "关闭字幕" : "显示字幕",
+          html: `<span class="art-cc-btn">CC</span>`,
+          click: () => {
+            // 无字幕时不响应，避免点了没反馈被当成 bug
+            if (!hasSubtitleRef.current) return;
+            setCcVisible((v) => !v);
+          },
+          mounted: (el) => {
+            ccControlElRef.current = el as HTMLElement;
+            el.classList.toggle("art-cc-active", ccVisibleRef.current);
+            el.setAttribute("aria-pressed", String(ccVisibleRef.current));
+          },
+        });
+
         player.on("ready", () => {
           if (disposed) return;
           setVideoLoading(false);
           setVideoDuration(Number.isFinite(player.duration) ? player.duration : null);
-          // 恢复上次学习进度
+          // 编辑器「定位」带 t 参数 → 直接跳到该时间点（优先于恢复进度）
+          if (seekTo > 0) {
+            player.seek = seekTo;
+            return;
+          }
+          // 否则恢复上次学习进度
           const saved = loadProgress(courseId);
           if (saved && saved.time > 1) {
             player.seek = saved.time;
@@ -194,16 +235,14 @@ export default function Player() {
     const art = artRef.current;
     art?.pause();
     setAiExpanded(true);
-    setSelSubtitle(m.selectedText);
-    setSelTime(m.mode === "L3" ? m.time : m.cue?.start ?? m.time);
-    if (m.mode === "L1") {
-      setPrefill(`用户看到了「${m.selectedText}」，疑问是：`);
-    } else if (m.mode === "L2") {
-      setPrefill(`用户看到了「${m.selectedText}」，疑问是：`);
-      message.info("已使用整条字幕");
+    if (m.mode === "L3" || !m.cue) {
+      // L3：只传当前播放位置，不创建 Anchor
+      setActiveCitation(null);
+      if (m.mode === "L3") message.info("已使用当前时间点上下文");
     } else {
-      setPrefill(`用户看到了当前时间点（${Math.floor(m.time)}s）的内容，疑问是：`);
-      message.info("已使用当前时间点上下文");
+      // L1/L2：引用整条 cue 的真实时间区间（选中文字落在当前 cue 内）
+      setActiveCitation({ text: m.selectedText, start: m.cue.start, end: m.cue.end });
+      if (m.mode === "L2") message.info("已使用整条字幕");
     }
     closeMenu();
   };
@@ -220,6 +259,26 @@ export default function Player() {
     window.addEventListener("click", closeMenu);
     return () => window.removeEventListener("click", closeMenu);
   }, []);
+
+  // E2：CC 控件状态同步（命令式元素，用 ref 抓到的 DOM 直接切 class/属性）。
+  useEffect(() => {
+    const el = ccControlElRef.current;
+    if (!el) return;
+    el.classList.toggle("art-cc-active", ccVisible);
+    el.classList.toggle("art-cc-disabled", !hasSubtitleRef.current);
+    el.setAttribute("aria-pressed", String(ccVisible));
+    el.setAttribute("title", !hasSubtitleRef.current ? "该视频暂无字幕" : ccVisible ? "关闭字幕" : "显示字幕");
+  }, [ccVisible, cues]);
+
+  // E2：CC 偏好持久化
+  useEffect(() => {
+    saveCcVisible(ccVisible);
+  }, [ccVisible]);
+
+  // E4：切换视频时清掉当前引用（连续追问的锚点在换课后失效）
+  useEffect(() => {
+    setActiveCitation(null);
+  }, [courseId]);
 
   return (
     <div className="player-page">
@@ -249,6 +308,7 @@ export default function Player() {
               <SubtitleOverlay
                 currentTime={currentTime}
                 cues={cues}
+                visible={ccVisible}
                 onCueChange={(c) => setCurrentCue(c)}
               />
             )}
@@ -305,16 +365,11 @@ export default function Player() {
         >
           <AISidebar
             courseId={courseId || ""}
-            prefill={prefill}
-            selectedSubtitle={selSubtitle}
-            startTime={selTime}
-            endTime={selTime}
+            citation={activeCitation}
             currentTime={currentTime}
             videoDuration={videoDuration}
-            onContextConsumed={() => {
-              setSelSubtitle("");
-              setSelTime(null);
-            }}
+            currentCue={currentCue}
+            onClearCitation={() => setActiveCitation(null)}
           />
         </div>
       </div>

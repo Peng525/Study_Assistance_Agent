@@ -12,6 +12,18 @@ const { artInstances, MockArtplayer } = vi.hoisted(() => {
     seek = 0;
     pause = vi.fn();
     destroy = vi.fn();
+    // CC 控件注入所需（E2）：controls.add 立即调用 mounted 回调并传入合成元素，
+    // 这样 Player 的 ccControlElRef 在测试中也能拿到非空元素。
+    controlOptions: any[] = [];
+    controls = {
+      add: vi.fn((opt: any) => {
+        this.controlOptions.push(opt);
+        opt.mounted?.(document.createElement("div"));
+        return document.createElement("div");
+      }),
+      remove: vi.fn(),
+      update: vi.fn(),
+    };
     private handlers = new Map<string, Array<(...args: unknown[]) => void>>();
 
     constructor(options: Record<string, unknown>) {
@@ -145,9 +157,9 @@ describe("播放器页面", () => {
     fireEvent.contextMenu(screen.getByTestId("video-surface"));
     fireEvent.click(await screen.findByText("以当前播放时间点向 AI 提问"));
     const input = await screen.findByPlaceholderText(aiPlaceholder);
-    expect(input).toHaveValue(
-      "用户看到了当前时间点（0s）的内容，疑问是：",
-    );
+    // E3：不再预填模板文字，输入框为空；L3 不创建 Anchor（无引用卡片）
+    expect(input).toHaveValue("");
+    expect(screen.queryByTestId("citation-card")).toBeNull();
 
     fireEvent.change(input, { target: { value: "保留这段对话" } });
     fireEvent.click(screen.getByRole("button", { name: "收起 AI 对话" }));
@@ -157,7 +169,7 @@ describe("播放器页面", () => {
     expect(container.querySelector(".player-ai-panel")).toHaveAttribute("aria-hidden", "false");
   });
 
-  it("AI 对话默认半屏，支持拖拽、键盘调整并记住宽度", async () => {
+  it("AI 对话默认收起、展开后默认 40% 并支持拖拽与记忆", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
     mockMediaFetch();
     const { container } = renderPlayer();
@@ -165,8 +177,17 @@ describe("播放器页面", () => {
 
     const panel = container.querySelector(".player-ai-panel") as HTMLElement;
     const workspace = container.querySelector(".player-workspace") as HTMLElement;
+
+    // E1：默认收起（AC-SUB-001）
+    expect(panel.style.width).toBe("0px");
+    expect(panel).toHaveAttribute("aria-hidden", "true");
+
+    // 展开后默认 40%
+    fireEvent.click(screen.getByRole("button", { name: "展开 AI 对话" }));
+    expect(panel.style.width).toBe("40%");
+    expect(panel).toHaveAttribute("aria-hidden", "false");
+
     const splitter = screen.getByRole("separator", { name: "调整 AI 对话宽度" });
-    expect(panel.style.width).toBe("50%");
     workspace.getBoundingClientRect = () => ({
       width: 1000, right: 1000, left: 0, top: 0, bottom: 600, height: 600,
       x: 0, y: 0, toJSON: () => ({}),
@@ -174,7 +195,7 @@ describe("播放器页面", () => {
     (splitter as any).setPointerCapture = vi.fn();
     (splitter as any).releasePointerCapture = vi.fn();
 
-    // 向左拖到远超上限的坐标（理论值 90%），验证被 clamp 到 MAX_AI_WIDTH
+    // 向左拖到远超上限的坐标（理论值 90%），验证被 clamp 到 MAX_AI_WIDTH(50)
     fireEvent.pointerDown(splitter, { pointerId: 1, clientX: 500 });
     fireEvent.pointerMove(splitter, { pointerId: 1, clientX: 100 });
     fireEvent.pointerUp(splitter, { pointerId: 1, clientX: 100 });
@@ -207,11 +228,13 @@ describe("播放器页面", () => {
 
     const panel = container.querySelector(".player-ai-panel") as HTMLElement;
     const workspace = container.querySelector(".player-workspace") as HTMLElement;
-    const splitter = screen.getByRole("separator", { name: "调整 AI 对话宽度" });
     workspace.getBoundingClientRect = () => ({
       width: 1000, right: 1000, left: 0, top: 0, bottom: 600, height: 600,
       x: 0, y: 0, toJSON: () => ({}),
     });
+    // 先展开（默认收起），splitter 才渲染
+    fireEvent.click(screen.getByRole("button", { name: "展开 AI 对话" }));
+    const splitter = screen.getByRole("separator", { name: "调整 AI 对话宽度" });
     (splitter as any).setPointerCapture = vi.fn();
     (splitter as any).releasePointerCapture = vi.fn();
 
@@ -266,6 +289,8 @@ describe("播放器页面", () => {
       artInstances[0].emit("video:timeupdate");
     });
 
+    // 默认收起，先展开再与输入框/发送按钮交互（否则它们在 aria-hidden 子树里不可达）
+    fireEvent.click(screen.getByRole("button", { name: "展开 AI 对话" }));
     const input = await screen.findByPlaceholderText(aiPlaceholder);
     fireEvent.change(input, { target: { value: "这里讲了什么？" } });
     fireEvent.click(screen.getByRole("button", { name: /发送/ }));
@@ -282,10 +307,57 @@ describe("播放器页面", () => {
     expect(payload).toMatchObject({
       course_id: "course-1",
       selected_subtitle: "",
-      start_time: 75.5,
-      end_time: 75.5,
+      // A3：无引用时 start/end 是 Anchor 区间（null），播放位置走 current_time
+      start_time: null,
+      end_time: null,
+      current_time: 75.5,
       video_duration: 600,
       user_question: "这里讲了什么？",
     });
+  });
+
+  it("CC 开关注入播放器控制栏（name=cc / position=right / index=25），否决浮层", async () => {
+    mockMediaFetch({
+      subtitle: "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n字幕\n",
+    });
+    renderPlayer();
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+    const cc = artInstances[0].controlOptions.find((o: any) => o.name === "cc");
+    // 锁死「不许退回右上角浮层」：必须落在控制栏、紧贴进度条行
+    expect(cc).toBeDefined();
+    expect(cc.position).toBe("right");
+    expect(cc.index).toBe(25);
+  });
+
+  it("点击 CC 控件可开关字幕显示", async () => {
+    mockMediaFetch({
+      subtitle: "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n字幕\n",
+    });
+    const { container } = renderPlayer();
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+    const cc = artInstances[0].controlOptions.find((o: any) => o.name === "cc");
+
+    act(() => {
+      artInstances[0].currentTime = 2;
+      artInstances[0].emit("video:timeupdate");
+    });
+    expect(await screen.findByText("字幕")).toBeInTheDocument();
+
+    act(() => cc.click());
+    await waitFor(() => expect(container.querySelector(".subtitle-overlay")).toBeNull());
+
+    act(() => cc.click());
+    expect(await screen.findByText("字幕")).toBeInTheDocument();
+  });
+
+  it("无字幕时 CC 控件点击被守卫拦截，不报错", async () => {
+    mockMediaFetch(); // 无字幕
+    const { container } = renderPlayer();
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+    const cc = artInstances[0].controlOptions.find((o: any) => o.name === "cc");
+    expect(cc).toBeDefined();
+    // 无字幕：点击不应切换、不应抛错（守卫拦截）
+    expect(() => act(() => cc.click())).not.toThrow();
+    expect(container.querySelector(".subtitle-overlay")).toBeNull();
   });
 });

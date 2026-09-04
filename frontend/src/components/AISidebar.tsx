@@ -4,6 +4,9 @@ import { ClearOutlined, SendOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getToken } from "../store/auth";
+import { formatTime } from "../utils/time";
+import CitationCard, { Citation } from "./CitationCard";
+import { Cue } from "./SubtitleOverlay";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -18,27 +21,26 @@ export interface ChatMessage {
 
 interface AISidebarProps {
   courseId: string;
-  prefill?: string; // 选中字幕预填模板
-  selectedSubtitle?: string;
-  startTime?: number | null;
-  endTime?: number | null;
+  /**用户主动引用的字幕（Active Citation）。null = 仅用播放位置作为上下文。*/
+  citation?: Citation | null;
   currentTime?: number;
   videoDuration?: number | null;
-  onContextConsumed?: () => void;
+  /**当前播放到的字幕 cue，供 L4「插入当前字幕」使用。*/
+  currentCue?: Cue | null;
+  /**清空会话时一并清掉引用。*/
+  onClearCitation?: () => void;
 }
 
 export default function AISidebar({
   courseId,
-  prefill,
-  selectedSubtitle = "",
-  startTime,
-  endTime,
+  citation,
   currentTime = 0,
   videoDuration,
-  onContextConsumed,
+  currentCue,
+  onClearCitation,
 }: AISidebarProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState(prefill || "");
+  const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [historyNotice, setHistoryNotice] = useState("");
@@ -49,10 +51,6 @@ export default function AISidebar({
   const listRef = useRef<HTMLDivElement>(null);
   const requestInFlightRef = useRef(false);
   const viewIdRef = useRef(0);
-
-  useEffect(() => {
-    if (prefill) setInput(prefill);
-  }, [prefill]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -111,7 +109,11 @@ export default function AISidebar({
     requestInFlightRef.current = true;
     setStreaming(true);
     setInput("");
-    const anchorTime = selectedSubtitle && startTime != null ? startTime : currentTime;
+    // 关键：引用在整轮请求期间保持存活（快照），**不**在发送后立即清空——
+    // 这正是「连续追问第二轮丢失引用」的根因所在。
+    const snapshot = citation ?? null;
+    const anchorStart = snapshot ? snapshot.start : currentTime;
+    const anchorEnd = snapshot ? snapshot.end : currentTime;
     setMessages((m) => [
       ...m,
       {
@@ -119,11 +121,10 @@ export default function AISidebar({
         content: question,
         course_id: courseId,
         video_name: currentVideoName,
-        start_time: anchorTime,
+        start_time: anchorStart ?? null,
       },
       { role: "assistant", content: "" },
     ]);
-    onContextConsumed?.();
 
     try {
       const resp = await fetch("/api/chat/stream", {
@@ -134,9 +135,13 @@ export default function AISidebar({
         },
         body: JSON.stringify({
           course_id: courseId,
-          selected_subtitle: selectedSubtitle,
-          start_time: anchorTime,
-          end_time: selectedSubtitle ? endTime ?? anchorTime : anchorTime,
+          // Active Citation：用户主动选中的字幕文本作为 Selected Evidence
+          selected_subtitle: snapshot?.text ?? "",
+          start_time: snapshot ? snapshot.start : null,
+          end_time: snapshot ? snapshot.end : null,
+          // 当前播放位置（±180 秒 Transcript Context 的时间窗基准）；
+          // 老前端不传该字段时后端回退 start_time，行为不变。
+          current_time: currentTime,
           video_duration: videoDuration,
           user_question: question,
           session_id: sessionId,
@@ -238,6 +243,7 @@ export default function AISidebar({
   const clearSession = async () => {
     if (!sessionId) {
       setMessages([]);
+      onClearCitation?.();
       return;
     }
     try {
@@ -248,10 +254,17 @@ export default function AISidebar({
       if (!resp.ok) throw new Error("clear failed");
       setMessages([]);
       setCurrentModel("");
+      // 清空会话同时清掉当前引用（连续追问的锚点也没了）
+      onClearCitation?.();
       message.success("会话已清空");
     } catch {
       message.error("清空失败");
     }
+  };
+
+  const insertCurrentCue = () => {
+    if (!currentCue) return;
+    setInput((v) => (v ? `${v}\n${currentCue.text}` : currentCue.text));
   };
 
   return (
@@ -290,17 +303,12 @@ export default function AISidebar({
         </Button>
       </div>
 
-      <div
-        ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 16 }}
-      >
+      <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 16 }}>
         {messages.length === 0 ? (
           <Empty description="选中字幕右键提问，或直接输入问题" />
         ) : (
           messages.map((m, i) => (
-            <div
-              key={i}
-              className={`ai-message-row ai-message-row--${m.role}`}
-            >
+            <div key={i} className={`ai-message-row ai-message-row--${m.role}`}>
               {m.role === "user" && (m.video_name || m.start_time != null) && (
                 <div
                   style={{
@@ -321,9 +329,7 @@ export default function AISidebar({
                   思考耗时 {(m.thinking_ms / 1000).toFixed(1)} 秒
                 </div>
               )}
-              <div
-                className={m.role === "assistant" ? "ai-answer" : "ai-user-message"}
-              >
+              <div className={m.role === "assistant" ? "ai-answer" : "ai-user-message"}>
                 {m.role === "assistant" && m.content ? (
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                 ) : (
@@ -341,6 +347,11 @@ export default function AISidebar({
       </div>
 
       <div className="ai-composer">
+        {citation && (
+          <div className="ai-composer__citation">
+            <CitationCard citation={citation} onRemove={() => onClearCitation?.()} />
+          </div>
+        )}
         <div className="ai-composer__row">
           <Input.TextArea
             value={input}
@@ -365,14 +376,12 @@ export default function AISidebar({
             发送
           </Button>
         </div>
+        <div className="ai-composer__tools">
+          <Button size="small" onClick={insertCurrentCue} disabled={!currentCue}>
+            插入当前字幕
+          </Button>
+        </div>
       </div>
     </div>
   );
-}
-
-function formatTime(seconds: number) {
-  const safe = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(safe / 60);
-  const remainder = safe % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }

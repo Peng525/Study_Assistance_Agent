@@ -364,6 +364,82 @@ body {
   padding-inline: 18px;
 }
 
+/* L4：插入当前字幕等工具行 */
+.ai-composer__tools {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 引用卡片（Active Citation / 用户主动引用的字幕） */
+.ai-composer__citation {
+  margin-bottom: 10px;
+}
+
+.citation-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid #3ea6ff;
+  border-radius: 6px;
+  background: var(--bg-panel, #f5f7fa);
+  padding: 8px 10px;
+}
+
+.citation-card__meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.citation-card__time {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+
+.citation-card__close {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-secondary, #888);
+  padding: 0 4px;
+}
+
+.citation-card__close:hover {
+  color: #ff4d4f;
+}
+
+.citation-card__text {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text, #222);
+}
+
+/* CC 开关（播放器控制栏原生控件） */
+.art-control .art-cc-btn {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  opacity: 0.5;
+}
+
+.art-control.art-cc-active .art-cc-btn {
+  opacity: 1;
+  color: #3ea6ff;
+}
+
+.art-control[aria-pressed="true"] .art-cc-btn {
+  opacity: 1;
+  color: #3ea6ff;
+}
+
+.art-control.art-cc-disabled .art-cc-btn {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 @media (max-width: 720px) {
   .player-workspace {
     position: relative;

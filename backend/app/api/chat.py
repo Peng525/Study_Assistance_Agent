@@ -27,6 +27,7 @@ from app.models.models import (
     VideoKnowledge,
 )
 from app.services.context_builder import build_context, parse_vtt_cues, extract_time_window
+from app.services.subtitle import transcript_context_allowed
 from app.services.llm_client import stream_chat
 from app.services.llm_audit import create_call_log, update_call_log
 from app.services.model_router import RoutingOutcome, stream_model_chain
@@ -45,8 +46,13 @@ SUMMARY_BATCH_MESSAGES = 10
 class ChatRequest(BaseModel):
     course_id: str | None = None
     selected_subtitle: str = ""
+    # start/end = Active Citation 的**字幕区间**（用户选中的那一条）
     start_time: float | None = None
     end_time: float | None = None
+    # A3：用户**当前播放位置**，与 start/end 语义分离。
+    # ±180 秒 Transcript Context 的时间窗基准用它；缺省时回退到 start_time，
+    # 保证老客户端（未升级的前端）行为不变。
+    current_time: float | None = None
     video_duration: float | None = Field(default=None, ge=0)
     user_question: str = Field(min_length=1)
     session_id: str | None = None
@@ -358,13 +364,20 @@ async def chat_stream(
                     ).first()
             courseware_text = material.courseware_text_cached or ""
             courseware_has_chapters = material.courseware_has_chapters
-            if material.subtitle_path and body.start_time is not None:
-                try:
-                    vtt_text = Path(material.subtitle_path).read_text(encoding="utf-8")
-                    cues = parse_vtt_cues(vtt_text)
-                    transcript = extract_time_window(cues, body.start_time)
-                except Exception:
+            # A3：时间窗基准 = 当前播放位置，缺省回退选中字幕起点（兼容老客户端）
+            window_anchor = body.current_time if body.current_time is not None else body.start_time
+            if material.subtitle_path and window_anchor is not None:
+                # A3 门控：生成完成(ready) ≠ 可以作为自动证据(reviewed)。
+                # 未审核字幕允许展示、允许主动引用，但不自动注入 ±180 秒上下文。
+                if not transcript_context_allowed(material.subtitle_status, material.review_state):
                     transcript = ""
+                else:
+                    try:
+                        vtt_text = Path(material.subtitle_path).read_text(encoding="utf-8")
+                        cues = parse_vtt_cues(vtt_text)
+                        transcript = extract_time_window(cues, window_anchor)
+                    except Exception:
+                        transcript = ""
 
     # 已归栏视频始终解析为当前用户在该专栏的固定会话。
     history: list[dict] = []
@@ -483,7 +496,10 @@ async def chat_stream(
         if material and material.video_original_filename
         else body.course_id or "未绑定课程"
     )
-    time_text = f"{body.start_time:.1f} 秒" if body.start_time is not None else "未提供"
+    # A3：「当前播放位置」应为 current_time。老前端不传该字段时回退 start_time，
+    # 避免把 Citation 区间错当成播放位置（PRD 指出的语义混乱点）。
+    playback_time = body.current_time if body.current_time is not None else body.start_time
+    time_text = f"{playback_time:.1f} 秒" if playback_time is not None else "未提供"
     duration_text = f"{body.video_duration:.1f} 秒" if body.video_duration else "未知"
     video_context = (
         f"课程ID：{body.course_id or '未绑定'}\n"
