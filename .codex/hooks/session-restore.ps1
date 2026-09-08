@@ -37,6 +37,17 @@ foreach ($gate in @('code-review', 'test')) {
 }
 $sections.Add("=== Current QA state ===`n" + ($qaLines -join "`n"))
 
+$handoverDir = Join-Path $root 'docs/00-handover'
+if (Test-Path -LiteralPath $handoverDir -PathType Container) {
+    $handoverDoc = Get-ChildItem -LiteralPath $handoverDir -File -Filter '*.md' |
+        Sort-Object Name |
+        Select-Object -First 1
+    if ($null -ne $handoverDoc) {
+        $handoverHead = Get-Content -LiteralPath $handoverDoc.FullName -TotalCount 60 -Encoding UTF8
+        $sections.Add("=== Handover doc (authoritative for current progress and todos): $($handoverDoc.Name) ===`n" + ($handoverHead -join "`n"))
+    }
+}
+
 $longTerm = Join-Path $memoryDir 'MEMORY.md'
 if (Test-Path -LiteralPath $longTerm -PathType Leaf) {
     $sections.Add("=== Long-term project memory ===`n" + (Get-Content -LiteralPath $longTerm -Raw -Encoding UTF8).Trim())

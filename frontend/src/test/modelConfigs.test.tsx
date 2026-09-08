@@ -42,6 +42,15 @@ beforeEach(() => {
 });
 
 describe("模型配置页面", () => {
+  const openConfigActions = async (name = "阿里云百炼") => {
+    fireEvent.click(await screen.findByRole("button", { name: `${name} 更多操作` }));
+    return waitFor(() => {
+      const items = document.querySelectorAll<HTMLElement>(".ant-dropdown-menu-item");
+      expect(items.length).toBe(2);
+      return items;
+    });
+  };
+
   it("空列表显示可操作提示", async () => {
     (api.get as any).mockResolvedValue({ data: [] });
     render(<ModelConfigs />);
@@ -57,7 +66,8 @@ describe("模型配置页面", () => {
     (api.put as any).mockResolvedValue({ data: dashscopeConfig });
 
     render(<ModelConfigs />);
-    fireEvent.click(await screen.findByRole("button", { name: "编辑接入" }));
+    const items = await openConfigActions();
+    fireEvent.click(items[0]);
     fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
 
     await waitFor(() => {
@@ -66,6 +76,31 @@ describe("模型配置页面", () => {
         expect.objectContaining({ is_default: true }),
       );
     });
+  });
+
+  it("API 接入行只保留查看模型链和更多，删除需二次确认", async () => {
+    (api.get as any).mockImplementation((url: string) =>
+      Promise.resolve({ data: url.endsWith("/routes") ? [] : [dashscopeConfig] }),
+    );
+    (api.delete as any).mockResolvedValue({ data: {} });
+
+    render(<ModelConfigs />);
+    expect(await screen.findByRole("button", { name: "查看模型链" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑接入" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除接入" })).toBeNull();
+
+    const items = await openConfigActions();
+    expect(items[0]).toHaveTextContent("编辑接入");
+    expect(document.querySelectorAll(".ant-dropdown-menu-item-divider")).toHaveLength(1);
+    expect(items[1]).toHaveTextContent("删除接入");
+    expect(items[1]).toHaveClass("ant-dropdown-menu-item-danger");
+    fireEvent.click(items[1]);
+    expect(api.delete).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: /删\s*除\s*接\s*入/ }));
+
+    await waitFor(() =>
+      expect(api.delete).toHaveBeenCalledWith("/admin/model-configs/1"),
+    );
   });
 
   it("默认直接展示所选 API 的十个模型，无需展开父表", async () => {

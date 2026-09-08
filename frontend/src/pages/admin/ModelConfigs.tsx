@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Button,
   Card,
+  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -14,7 +15,7 @@ import {
   Typography,
   message,
 } from "antd";
-import { PlusOutlined } from "@ant-design/icons";
+import { MoreOutlined, PlusOutlined } from "@ant-design/icons";
 import { api } from "../../api/client";
 
 interface ModelConfig {
@@ -472,7 +473,7 @@ export default function ModelConfigs() {
     {
       title: "操作",
       render: (_: unknown, row: ModelConfig) => (
-        <Space wrap>
+        <Space size={4} style={{ whiteSpace: "nowrap" }}>
           <Button
             size="small"
             type={selectedConfigId === row.id ? "primary" : "default"}
@@ -480,14 +481,35 @@ export default function ModelConfigs() {
           >
             查看模型链
           </Button>
-          <Button size="small" onClick={() => openEdit(row)}>
-            编辑接入
-          </Button>
-          <Popconfirm title="确认删除该 API 接入及其模型链？" onConfirm={() => remove(row.id)}>
-            <Button size="small" danger>
-              删除
-            </Button>
-          </Popconfirm>
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: [
+                { key: "edit", label: "编辑接入" },
+                { type: "divider" },
+                { key: "delete", label: "删除接入", danger: true },
+              ],
+              onClick: ({ key }) => {
+                if (key === "edit") openEdit(row);
+                if (key === "delete") {
+                  Modal.confirm({
+                    title: "确认删除该 API 接入及其模型链？",
+                    okText: "删除接入",
+                    cancelText: "取消",
+                    okButtonProps: { danger: true },
+                    onOk: () => remove(row.id),
+                  });
+                }
+              },
+            }}
+          >
+            <Button
+              type="text"
+              size="small"
+              aria-label={`${row.name} 更多操作`}
+              icon={<MoreOutlined />}
+            />
+          </Dropdown>
         </Space>
       ),
     },

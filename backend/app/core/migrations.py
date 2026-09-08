@@ -8,7 +8,7 @@
 约定：
     - 每条迁移写成「检测 → 执行」，可重复运行（应用每次启动都会跑一遍）
     - 表不存在时直接跳过（create_all 会用当前模型建表，新列已包含在内）
-    - 只做加列 / 建索引这类安全的增量操作；改列类型、删列请手工处理
+    - 删除废弃列仅使用 SQLite 3.35+ 原生 DROP COLUMN；旧版本记录警告并跳过
 """
 
 import logging
@@ -48,6 +48,29 @@ def _add_column_if_missing(engine: Engine, table: str, column: str, ddl: str) ->
     return True
 
 
+def _sqlite_supports_drop_column(engine: Engine) -> bool:
+    with engine.connect() as conn:
+        version = str(conn.execute(text("SELECT sqlite_version()")).scalar_one())
+    try:
+        return tuple(int(part) for part in version.split(".")[:3]) >= (3, 35, 0)
+    except ValueError:
+        logger.warning("无法识别 SQLite 版本 %s，跳过 DROP COLUMN", version)
+        return False
+
+
+def _drop_column_if_exists(engine: Engine, table: str, column: str) -> bool:
+    """SQLite 3.35+ 下幂等删列；旧 SQLite 安全跳过。"""
+    if not _table_exists(engine, table) or column not in _table_columns(engine, table):
+        return False
+    if not _sqlite_supports_drop_column(engine):
+        logger.warning("SQLite 版本低于 3.35，跳过删除 %s.%s", table, column)
+        return False
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+    logger.info("migration applied: drop %s.%s", table, column)
+    return True
+
+
 def run_migrations(engine: Engine) -> list[str]:
     """执行全部幂等迁移，返回本次实际执行的迁移名（便于启动日志观察）。"""
     applied: list[str] = []
@@ -63,5 +86,9 @@ def run_migrations(engine: Engine) -> list[str]:
         "VARCHAR(16) NOT NULL DEFAULT 'unreviewed'",
     ):
         applied.append("materials.review_state")
+
+    # v9 S2：取消不是持久业务状态；旧列仅用于过渡，现在幂等清理。
+    if _drop_column_if_exists(engine, "materials", "subtitle_canceled"):
+        applied.append("materials.subtitle_canceled")
 
     return applied

@@ -138,3 +138,103 @@ def test_save_subtitle_cues_404_when_no_course(client, db_session, tmp_path):
         headers=_h(),
     )
     assert resp.status_code == 404
+
+
+# ---------- v9 批次 2 · B2-2：cues 写回的并发约束 ----------
+
+
+def test_revision_is_computed_while_holding_write_lock(client, db_session, tmp_path, monkeypatch):
+    """check-then-act 必须原子化：校验用的 revision 要在**持锁期间**计算。
+
+    在锁外算 revision 的话，两个并发请求会读到同一个指纹并双双通过校验，
+    后写的覆盖先写的，而双方都收到「保存成功」—— 乐观锁形同虚设（PRD §5.5A.6）。
+    """
+    from app.api import admin_materials as am
+
+    _make_ready_with_vtt(db_session, tmp_path)
+    vtt = tmp_path / "c1.whisper.vtt"
+    rev = cue_revision(vtt.read_text(encoding="utf-8"))
+
+    seen = []
+    orig = am.cue_revision
+
+    def spy(text):
+        seen.append(am._CUES_WRITE_LOCK.locked())
+        return orig(text)
+
+    monkeypatch.setattr(am, "cue_revision", spy)
+
+    resp = client.put(
+        "/api/admin/materials/c1/subtitle/cues",
+        headers=_h(),
+        json={"revision": rev, "cues": [{"start": 1.0, "end": 5.0, "text": "改"}]},
+    )
+    assert resp.status_code == 200
+    assert seen, "PUT 期间应该算过 revision"
+    # 第 1 次是校验用的（锁内），后面还有一次是算新 revision 返回给前端（锁外，无所谓）
+    assert seen[0] is True, "校验用的 revision 必须在持锁期间计算，否则 check-then-act 不原子"
+
+
+def test_cues_tmp_name_is_unique(client, db_session, tmp_path, monkeypatch):
+    """临时文件名唯一化：固定名会让并发请求写同一个 tmp。
+
+    `replace` 的原子性只保证单次 swap，不保证 swap 进去的内容是谁写的 ——
+    两个请求写同一个 `xxx.vtt.tmp` 时，后 replace 的可能把先写的内容换进去。
+    """
+    import pathlib
+
+    _make_ready_with_vtt(db_session, tmp_path)
+    vtt = tmp_path / "c1.whisper.vtt"
+
+    names = []
+    orig_replace = pathlib.Path.replace
+
+    def spy_replace(self, target):
+        names.append(self.name)
+        return orig_replace(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", spy_replace)
+
+    for text in ("第一次", "第二次"):
+        rev = cue_revision(vtt.read_text(encoding="utf-8"))
+        resp = client.put(
+            "/api/admin/materials/c1/subtitle/cues",
+            headers=_h(),
+            json={"revision": rev, "cues": [{"start": 1.0, "end": 5.0, "text": text}]},
+        )
+        assert resp.status_code == 200, resp.text
+
+    assert len(names) == 2, f"应该写回两次，实际 {names}"
+    assert names[0] != names[1], "两次写回不能共用同一个 tmp 名"
+    assert all(n.startswith("c1.whisper.vtt.") and n.endswith(".tmp") for n in names), names
+
+
+def test_cues_write_failure_leaves_no_tmp_residue(client, db_session, tmp_path, monkeypatch):
+    """写回失败必须删掉 tmp —— 残留的 .tmp 会被素材扫描当成字幕文件。"""
+    import pathlib
+
+    _make_ready_with_vtt(db_session, tmp_path)
+    vtt = tmp_path / "c1.whisper.vtt"
+    rev = cue_revision(vtt.read_text(encoding="utf-8"))
+
+    orig_replace = pathlib.Path.replace
+
+    def boom_on_tmp(self, target):
+        if self.name.endswith(".tmp"):
+            raise OSError("replace failed (simulated)")
+        return orig_replace(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", boom_on_tmp)
+
+    with pytest.raises(OSError):
+        client.put(
+            "/api/admin/materials/c1/subtitle/cues",
+            headers=_h(),
+            json={"revision": rev, "cues": [{"start": 1.0, "end": 5.0, "text": "改"}]},
+        )
+
+    leftovers = [p.name for p in tmp_path.iterdir() if ".tmp" in p.name]
+    assert leftovers == [], f"写回失败后不应残留 tmp：{leftovers}"
+    assert vtt.read_text(encoding="utf-8") == cues_to_vtt(
+        [{"start": 1.0, "end": 5.0, "text": "你好"}, {"start": 6.0, "end": 10.0, "text": "世界"}]
+    ), "写回失败不应破坏原字幕文件"

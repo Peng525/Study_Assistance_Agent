@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.migrations import run_migrations
 from app.core.security import encrypt_api_key, hash_password
-from app.models.models import ModelConfig, SystemSetting, User
+from app.models.models import Material, ModelConfig, SystemSetting, User
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +76,36 @@ def seed_model_config(db: Session) -> None:
     db.commit()
 
 
+def _reconcile_orphan_subtitle_tasks(db: Session) -> None:
+    """把启动时残留的 `generating` 复位为 `pending`（v8 §5.5A.3 配套）。
+
+    进程重启后内存队列 `_queue` 是空的，但 DB 里若残留 `generating`，这些行永远不会
+    被任何 worker 推进 —— 前端会一直显示"生成中"并空轮询。
+
+    **不自动重新 enqueue**：启动即满载转写会拖慢首个请求、吃掉 CPU/内存，
+    交给管理员在素材管理页用批量操作显式触发更可控。
+
+    ⚠️ 这个函数在 v8 之前没有存在意义：那时 DB 根本到不了 generating
+    （见 admin_materials 的 root-cause 修复），自然不会有残留。修好根因后它才成为必需。
+    """
+    rows = db.query(Material).filter(Material.subtitle_status == "generating").all()
+    if not rows:
+        return
+    for material in rows:
+        material.subtitle_status = "pending"
+        material.subtitle_error = None
+        # B12：不要无条件把 source 写成 whisper。
+        # 这里是"进程重启打断了生成"的复位，不是"whisper 刚生成成功"——
+        # 一条人工上传的字幕被重启复位后来源就变成 whisper，PRD AC-14 直接失守。
+        # 只在来源缺失时兜底推断（legacy fallback）。
+        if material.subtitle_source is None and material.video_path:
+            material.subtitle_source = "whisper"
+    db.commit()
+    logger.info("启动复位 %d 条孤儿 generating 字幕任务（进程重启导致）", len(rows))
+
+
 def init_db() -> None:
-    """应用启动入口：建表 + seed 账号与默认模型配置。"""
+    """应用启动入口：建表 + seed 账号与默认模型配置 + 复位孤儿字幕任务。"""
     create_tables()
     from app.core.database import SessionLocal
 
@@ -85,6 +113,7 @@ def init_db() -> None:
     try:
         seed_users(db)
         seed_model_config(db)
+        _reconcile_orphan_subtitle_tasks(db)
         # P0 先使用一个稳定 project_key；现有和新课程均通过关联表绑定。
         from app.services.project_context import bind_all_materials
 

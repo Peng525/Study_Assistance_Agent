@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.security import create_access_token, hash_password
 from app.models.models import Material, ProjectSource, User, VideoKnowledge
 from app.services import storage
+from app.services import whisper_service
 from app.services.project_context import ensure_default_project
 
 
@@ -184,3 +185,71 @@ def test_scan_no_video_marks_error(client, tmp_path, db_session):
     assert m is not None
     assert m.status == "error"
     assert "缺少视频" in m.error_message
+
+
+# ---------- v9 S1：单条取消端点的契约收紧（AC-20） ----------
+
+
+def _reset_whisper_state():
+    """清空 `whisper_service` 的模块级全局状态。
+
+    `_tasks` / `_queue` / `_cancel_requested` 都是**模块级全局**，跨用例共享。
+    本文件前面的用例（上传 → 自动扫描 → 无字幕自动 enqueue）会往里塞真实任务，
+    不清理的话"没有真实任务"这个前提就是假的，取消测试会假绿。
+    """
+    whisper_service._tasks.clear()
+    whisper_service._queue.clear()
+    whisper_service._cancel_requested.clear()
+    whisper_service._worker_running = False
+
+
+def test_cancel_subtitle_returns_400_when_no_real_task(client, db_session, tmp_path):
+    """DB 写着 generating 但 runtime 无任务 → 单条取消必须 400，不许假成功（AC-20）。
+
+    批量端点返回 per-item `ok=false`；单条端点必须给 400。
+    两种形态下的语义必须一致：**没有真实任务 = 没取消成**。
+    """
+    _reset_whisper_state()
+
+    course_dir = tmp_path / "c1"
+    course_dir.mkdir(parents=True, exist_ok=True)
+    (course_dir / "v.mp4").write_bytes(b"\x00" * 16)
+    db_session.add(
+        Material(
+            course_id="c1",
+            dir_path=str(course_dir),
+            status="ready",
+            subtitle_status="generating",   # 进程重启残留的假 generating（orphan）
+        )
+    )
+    db_session.commit()
+
+    assert whisper_service.task_exists("c1") is False, "前置：runtime 里确实没有任务"
+    resp = client.post("/api/admin/materials/c1/cancel-subtitle", headers=_h())
+    assert resp.status_code == 400, "没有真实任务却返回成功，是最难排查的一类事故"
+    assert "队列中无该任务" in resp.json()["detail"]
+
+
+def test_cancel_subtitle_returns_400_for_pending_status(client, db_session, tmp_path):
+    """`pending` 不在 CANCELLABLE 白名单内 → 400。
+
+    `pending` 表示从未排上任务，内存里没有 TaskState，谈不上取消。
+    """
+    _reset_whisper_state()
+
+    course_dir = tmp_path / "c1"
+    course_dir.mkdir(parents=True, exist_ok=True)
+    (course_dir / "v.mp4").write_bytes(b"\x00" * 16)
+    db_session.add(
+        Material(
+            course_id="c1",
+            dir_path=str(course_dir),
+            status="ready",
+            subtitle_status="pending",
+        )
+    )
+    db_session.commit()
+
+    resp = client.post("/api/admin/materials/c1/cancel-subtitle", headers=_h())
+    assert resp.status_code == 400
+    assert "不可取消" in resp.json()["detail"]

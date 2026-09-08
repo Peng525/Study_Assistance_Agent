@@ -4,21 +4,39 @@ import {
   Dropdown,
   Form,
   Input,
-  InputNumber,
   Modal,
-  Popconfirm,
   Progress,
   Select,
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
 } from "antd";
-import { UploadOutlined } from "@ant-design/icons";
+import {
+  CheckCircleOutlined,
+  DownOutlined,
+  LoadingOutlined,
+  MoreOutlined,
+  PlayCircleOutlined,
+  ReloadOutlined,
+  StopOutlined,
+  UndoOutlined,
+  UploadOutlined,
+} from "@ant-design/icons";
 import { api } from "../../api/client";
-import { EditCue, secToStr, validateCueAxis, suspiciousReason } from "../../utils/subtitleEdit";
+import { adminMaterials, BatchResult } from "../../api/adminMaterials";
+import SubtitleDrawer, { SubtitleDrawerRow } from "../../components/SubtitleDrawer";
+import {
+  type BatchMode,
+  type ReviewTarget,
+  canSelect,
+  deriveSubtitleState,
+  formatElapsed,
+  pickBatchIds,
+} from "../../utils/subtitleStatus";
 
 interface MaterialRow {
   course_id: string;
@@ -26,10 +44,24 @@ interface MaterialRow {
   error_message?: string | null;
   courseware_format?: string | null;
   subtitle_status?: string;
+  subtitle_source?: string | null;
+  subtitle_filename?: string | null;
+  subtitle_relative_path?: string | null;
+  subtitle_error?: string | null;
+  subtitle_has_file?: boolean;
+  subtitle_task_active?: boolean;
+  subtitle_progress?: number;
+  subtitle_slices_done?: number;
+  subtitle_slices_total?: number;
+  subtitle_phase?: string | null;
+  subtitle_started_at?: number | null;
+  subtitle_queue_position?: number;
   review_state?: string;
   course_type?: "theory" | "practice" | null;
   source_id?: number | null;
   source_filename?: string | null;
+  scanned_at?: string | null;
+  duration?: number | null;
 }
 
 interface ColumnOption { id: number; filename: string; column_name: string; format: string; }
@@ -39,6 +71,21 @@ const FILE_TYPES = [
   { value: "subtitle", label: "字幕（vtt/srt）" },
   { value: "courseware", label: "课件（md/pdf/pptx）" },
 ];
+
+/** 降级轨：拿不到切片总数时显示已运行时间（每秒自重渲）。 */
+function ElapsedTimer({ since }: { since: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - since));
+  return (
+    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+      已运行 {formatElapsed(elapsed)}
+    </Typography.Text>
+  );
+}
 
 export default function Materials() {
   const [list, setList] = useState<MaterialRow[]>([]);
@@ -50,12 +97,14 @@ export default function Materials() {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  // P4 字幕编辑器：编辑弹窗状态
-  const [editOpen, setEditOpen] = useState(false);
-  const [editRow, setEditRow] = useState<MaterialRow | null>(null);
-  const [editCues, setEditCues] = useState<EditCue[]>([]);
-  const [editRevision, setEditRevision] = useState("");
-  const [editSaving, setEditSaving] = useState(false);
+  // v8：批量选择 + 字幕 Drawer 工作区
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [batchMode, setBatchMode] = useState<BatchMode>(null);
+  const [reviewTarget, setReviewTarget] = useState<ReviewTarget>(null);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerRow, setDrawerRow] = useState<MaterialRow | null>(null);
+
   const uploadFileType = Form.useWatch("file_type", uploadForm);
 
   const load = () => {
@@ -70,15 +119,22 @@ export default function Materials() {
 
   useEffect(load, []);
 
-  // C：字幕生成后轮询进度（仅生成中的行每 3s 拉一次状态）。
-  const [progressMap, setProgressMap] = useState<Record<string, number>>({});
-  const listRef = useRef<MaterialRow[]>(list);
-  listRef.current = list;
-  const fetchMaterials = useCallback(() => api.get("/materials").then((r) => setList(r.data)), []);
+  // C：字幕生成后轮询进度（仅当页面存在 generating 行时，每 3s 拉一次列表）
+  //
+  // ⚠️ 曾经的实现是"逐行调 subtitle-status 单查，把百分比存进 progressMap"，
+  // 但 progressMap **只写不读** —— 渲染吃的是 list 里那行静态快照，
+  // 而 list 只在任务终态才刷新，于是生成全程百分比定格在触发瞬间（AC-4 实质不通过）。
+  // 现在直接整表刷新：列表端点的 _peek_runtime() 已经把内存 worker 的进度合并进来了，
+  // 单查端点相对它没有增量信息（唯一多出的 task_error 与 DB 的 subtitle_error 重复），
+  // 为一个零增量信息维护 N 倍请求 + 一套字段映射层是纯负债。
+  const fetchMaterials = useCallback(
+    () => adminMaterials.listMaterials().then((d) => setList(d)),
+    [],
+  );
 
   const generateSubtitle = async (course_id: string) => {
     try {
-      await api.post(`/admin/materials/${encodeURIComponent(course_id)}/generate-subtitle`);
+      await adminMaterials.generateSubtitle(course_id);
       message.success("已触发字幕生成");
       fetchMaterials();
     } catch (e: any) {
@@ -88,7 +144,7 @@ export default function Materials() {
 
   const cancelSubtitle = async (course_id: string) => {
     try {
-      await api.post(`/admin/materials/${encodeURIComponent(course_id)}/cancel-subtitle`);
+      await adminMaterials.cancelSubtitle(course_id);
       message.success("已取消生成");
       fetchMaterials();
     } catch (e: any) {
@@ -97,116 +153,98 @@ export default function Materials() {
   };
 
   // A4：标记字幕审核状态。生成完成(unreviewed)才可解锁自动证据；已审核可撤销。
-  const toggleReview = async (row: MaterialRow) => {
+  const toggleReview = async (row: { course_id: string; review_state?: string }) => {
     const next = row.review_state === "reviewed" ? "unreviewed" : "reviewed";
     try {
-      await api.post(`/admin/materials/${encodeURIComponent(row.course_id)}/subtitle/review`, {
-        review_state: next,
-      });
+      await adminMaterials.reviewSubtitle(row.course_id, next);
       message.success(next === "reviewed" ? "已标记为已审核，解锁自动证据注入" : "已撤销审核");
       fetchMaterials();
+      setDrawerRow((prev) => (prev ? { ...prev, review_state: next } : prev));
     } catch (e: any) {
       message.error(e.response?.data?.detail || "操作失败");
     }
   };
 
-  // P4 编辑器：打开弹窗并拉取当前 cues + revision 乐观锁
-  const openEditor = async (row: MaterialRow) => {
+  // ---- 批量操作（v8 §5.5A.5）----
+  const selectedRows = list.filter(
+    (r) => selectedKeys.includes(r.course_id) && canSelect(r, batchMode, reviewTarget),
+  );
+  const { generateIds, cancelIds, reviewableIds, unreviewableIds } = pickBatchIds(selectedRows);
+  const globalBatchIds = pickBatchIds(list);
+
+  const startBatch = (
+    mode: Exclude<BatchMode, null>,
+    target: ReviewTarget = null,
+  ) => {
+    setSelectedKeys([]);
+    setBatchMode(mode);
+    setReviewTarget(mode === "review" ? target : null);
+  };
+
+  const exitBatch = () => {
+    setSelectedKeys([]);
+    setBatchMode(null);
+    setReviewTarget(null);
+  };
+
+  const runBatch = async (
+    label: string,
+    fn: (ids: string[]) => Promise<BatchResult>,
+    ids: string[],
+  ) => {
+    if (ids.length === 0) return;
+    setBatchBusy(true);
     try {
-      const res = await api.get(`/admin/materials/${encodeURIComponent(row.course_id)}/subtitle/cues`);
-      const d = res.data;
-      setEditRow(row);
-      setEditCues(
-        (d.cues || []).map((c: any) => ({
-          start: Number(c.start) || 0,
-          end: Number(c.end) || 0,
-          text: c.text || "",
-        })),
-      );
-      setEditRevision(d.revision);
-      setEditOpen(true);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || "加载字幕失败");
-    }
-  };
-
-  const changeCue = (i: number, field: keyof EditCue, value: any) => {
-    setEditCues((prev) => prev.map((c, idx) => (idx === i ? { ...c, [field]: value } : c)));
-  };
-
-  const addCue = () => {
-    setEditCues((prev) => [...prev, { start: 0, end: 0, text: "" }]);
-  };
-
-  const delCue = (i: number) => {
-    setEditCues((prev) => prev.filter((_, idx) => idx !== i));
-  };
-
-  const moveCue = (i: number, dir: -1 | 1) => {
-    setEditCues((prev) => {
-      const j = i + dir;
-      if (j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-  };
-
-  // P5 人工抽查：在播放器里定位到该 cue 起点（ArtPlayer 对照）
-  const locateCue = (start: number) => {
-    if (!editRow) return;
-    window.open(`/player?course_id=${encodeURIComponent(editRow.course_id)}&t=${start}`, "_blank");
-  };
-
-  // P4 编辑器：保存（先前端校验时间轴，再 PUT；遇 409 冲突重新拉取）
-  const saveCues = async () => {
-    const issues = validateCueAxis(editCues);
-    if (issues.length > 0) {
-      message.error(`时间轴非法：第 ${issues[0].index + 1} 条 ${issues[0].reason}`);
-      return;
-    }
-    setEditSaving(true);
-    try {
-      const res = await api.put(
-        `/admin/materials/${encodeURIComponent(editRow!.course_id)}/subtitle/cues`,
-        { cues: editCues, revision: editRevision },
-      );
-      setEditRevision(res.data.revision);
-      if (editRow) setEditRow({ ...editRow, review_state: res.data.review_state });
-      message.success("字幕已保存（编辑后需重新人工抽查）");
-      fetchMaterials();
-      setEditOpen(false);
-    } catch (e: any) {
-      if (e.response?.status === 409) {
-        message.warning("字幕已被改动，已重新拉取最新内容，请确认后再保存");
-        if (editRow) openEditor(editRow);
+      const r = await fn(ids);
+      message.success(`${label}：成功 ${r.succeeded} / 失败 ${r.failed}`);
+      const failed = r.results.filter((x) => !x.ok);
+      if (failed.length > 0) {
+        message.warning(
+          `失败项：${failed
+            .slice(0, 3)
+            .map((x) => `${x.course_id}（${x.error}）`)
+            .join("；")}${failed.length > 3 ? ` 等 ${failed.length} 项` : ""}`,
+        );
+        // 保留失败项和当前操作模式，管理员可以原地重试。
+        setSelectedKeys(failed.map((item) => item.course_id));
       } else {
-        message.error(e.response?.data?.detail || "保存失败");
+        exitBatch();
       }
+      fetchMaterials();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || `${label}失败`);
     } finally {
-      setEditSaving(false);
+      setBatchBusy(false);
+    }
+  };
+
+  const scanAll = async () => {
+    try {
+      const r = await adminMaterials.scanAll();
+      message.success(r?.message || "扫描完成");
+      load();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || "扫描失败");
     }
   };
 
   const generating = list.some((r) => r.subtitle_status === "generating");
+  const pollingRef = useRef(false);
   useEffect(() => {
     if (!generating) return;
     let alive = true;
     const tick = async () => {
-      const rows = listRef.current.filter((r) => r.subtitle_status === "generating");
-      await Promise.all(
-        rows.map(async (r) => {
-          try {
-            const res = await api.get(`/materials/${encodeURIComponent(r.course_id)}/subtitle-status`);
-            const d = res.data;
-            if (!alive) return;
-            setProgressMap((m) => ({ ...m, [r.course_id]: Math.round((d.progress || 0) * 100) }));
-            if (d.subtitle_status !== "generating" || d.error) fetchMaterials();
-          } catch {
-            /* 轮询失败不影响其他行 */
-          }
-        }),
-      );
+      // 上一轮还没回来就跳过：慢请求堆积会让 3s 间隔形同虚设，且乱序回包会覆盖新数据
+      if (pollingRef.current) return;
+      pollingRef.current = true;
+      try {
+        const rows = await adminMaterials.listMaterials();
+        if (alive) setList(rows);
+      } catch {
+        /* 单轮失败静默，下轮再试 —— 不弹 message.error 打断管理员 */
+      } finally {
+        pollingRef.current = false;
+      }
     };
     tick();
     const id = setInterval(tick, 3000);
@@ -214,7 +252,7 @@ export default function Materials() {
       alive = false;
       clearInterval(id);
     };
-  }, [generating, fetchMaterials]);
+  }, [generating]);
 
   // 上传文件（带进度条）
   const uploadFile = async (
@@ -224,19 +262,13 @@ export default function Materials() {
     courseType: "theory" | "practice" = "theory",
     sourceId?: number,
   ) => {
-    const fd = new FormData();
-    fd.append("file", file);
     setUploading(true);
     setProgress(0);
     try {
-      await api.post(
-        `/admin/materials/upload?course_id=${encodeURIComponent(courseId)}&file_type=${fileType}&course_type=${courseType}${sourceId ? `&source_id=${sourceId}` : ""}`,
-        fd,
-        {
-        headers: { "Content-Type": "multipart/form-data" },
-        onUploadProgress: (e) => {
+      await adminMaterials.upload(
+        { courseId, fileType, file, courseType, sourceId },
+        (e) => {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
-        },
         },
       );
       message.success("上传成功");
@@ -260,16 +292,24 @@ export default function Materials() {
     }
     const ok = await uploadFile(course_id, file_type, file, course_type || "theory", source_id);
     if (ok) {
-      setUploadOpen(false);
-      setFileList([]);
-      uploadForm.resetFields();
+      closeUpload();
     }
   };
 
-  const rescan = async (course_id: string) => {
-    await api.post(`/admin/materials/${course_id}/rescan`);
-    message.success("重新扫描完成");
-    load();
+  const closeUpload = () => {
+    setUploadOpen(false);
+    setFileList([]);
+    setProgress(0);
+    uploadForm.resetFields();
+  };
+
+  const selectUploadFile = (nextFileList: any[]) => {
+    const next = nextFileList.slice(-1);
+    setFileList(next);
+    const filename = next[0]?.originFileObj?.name || next[0]?.name;
+    if (!String(uploadForm.getFieldValue("course_id") || "").trim() && filename) {
+      uploadForm.setFieldValue("course_id", filename.replace(/\.[^./\\]+$/, ""));
+    }
   };
 
   // 重新上传（弹确认后覆盖）
@@ -297,200 +337,337 @@ export default function Materials() {
   };
 
   const columns = [
-    { title: "课程 ID", dataIndex: "course_id" },
+    {
+      title: "课程标识",
+      dataIndex: "course_id",
+      width: 180,
+      fixed: "left" as const,
+    },
     {
       title: "状态",
       dataIndex: "status",
-      render: (v: string) => (v === "ready" ? <Tag color="green">ready</Tag> : <Tag color="red">error</Tag>),
+      width: 80,
+      render: (v: string) =>
+        v === "ready" ? <Tag color="green">ready</Tag> : <Tag color="red">error</Tag>,
     },
     {
+      // v8 §5.5A.3：这一列只回答"字幕现在什么状态"，不负责入口
       title: "字幕状态",
       dataIndex: "subtitle_status",
-      render: (v: string, row: MaterialRow) => {
-        const map: Record<string, string> = {
-          ready: "已就绪",
-          pending: "待生成",
-          generating: "生成中",
-          error: "失败",
+      width: 180,
+      render: (_: any, row: MaterialRow) => {
+        const st = deriveSubtitleState(row);
+
+        // 正常轨：有切片总数 → 百分比 + 进度条 + 切片计数
+        if (st.kind === "transcribing" && st.slicesTotal) {
+          return (
+            <Space direction="vertical" size={2} style={{ width: "100%" }}>
+              <span style={{ fontSize: 12 }}>{st.label}</span>
+              <Progress percent={st.percent} size="small" showInfo={false} />
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {st.slicesDone} / {st.slicesTotal}
+              </Typography.Text>
+            </Space>
+          );
+        }
+        // 降级轨：拿不到切片总数 → 显示已运行计时，绝不编造百分比
+        if (st.kind === "transcribing") {
+          return (
+            <Space direction="vertical" size={2}>
+              <span style={{ fontSize: 12 }}>{st.label}</span>
+              {st.startedAt && <ElapsedTimer since={st.startedAt} />}
+            </Space>
+          );
+        }
+        const colorMap: Record<string, string> = {
+          pending: "default",
+          queued: "blue",
+          merging: "cyan",
+          unreviewed: "warning",
+          reviewed: "success",
+          error: "error",
         };
-        return (
-          <Space direction="vertical" size={2} style={{ display: "flex" }}>
-            <span>{map[v] || v || "—"}</span>
-            {row.subtitle_status === "generating" && (
-              <Progress percent={progressMap[row.course_id] ?? 0} size="small" />
-            )}
-            {row.subtitle_status === "ready" && (
-              <Tag color={row.review_state === "reviewed" ? "green" : "orange"}>
-                {row.review_state === "reviewed" ? "已审核" : "未审核"}
-              </Tag>
-            )}
-          </Space>
+        const tag = (
+          <Tag
+            color={colorMap[st.kind]}
+            icon={st.kind === "merging" ? <LoadingOutlined /> : undefined}
+          >
+            {st.label}
+          </Tag>
+        );
+        // 失败详情走 Tooltip —— 不额外展开一行（v8 §5.5A.6）。
+        return st.kind === "error" ? (
+          <Tooltip title={row.subtitle_error || "无错误详情，请查看后端日志"}>{tag}</Tooltip>
+        ) : (
+          tag
         );
       },
     },
-    { title: "课件格式", dataIndex: "courseware_format", render: (v: string) => v || "—" },
+    {
+      title: "课件",
+      dataIndex: "courseware_format",
+      width: 80,
+      align: "center" as const,
+      render: (v: string) => v || "—",
+    },
     {
       title: "课程类型",
       dataIndex: "course_type",
+      width: 80,
       render: (value: string) => (
         <Tag color={value === "practice" ? "blue" : "default"}>
-          {value === "practice" ? "实战/案例" : value === "theory" ? "理论/通用" : "未分类（旧数据）"}
+          {value === "practice" ? "实战" : value === "theory" ? "理论" : "未分类"}
         </Tag>
       ),
     },
-    { title: "所属专栏", dataIndex: "source_filename", render: (value: string) => value || "待归类" },
-    { title: "错误信息", dataIndex: "error_message", ellipsis: true, render: (v: string) => v || "—" },
     {
-      title: "操作",
-      render: (_: any, row: MaterialRow) => (
-        <Space>
-          <Button size="small" onClick={() => rescan(row.course_id)}>
-            重新扫描
-          </Button>
-          {row.status === "ready" && row.subtitle_status === "generating" && (
-            <Button size="small" danger onClick={() => cancelSubtitle(row.course_id)}>
-              取消生成
+      title: "所属专栏",
+      dataIndex: "source_filename",
+      width: 160,
+      render: (value: string) => value || "待归类",
+    },
+    {
+      // v8 §5.5A.2：这一列只回答"有字幕吗、能进去看吗"。
+      // 没有真实字幕就显示 —，绝不画灰色假图标（原则 P2）。
+      title: "字幕",
+      key: "subtitle",
+      width: 110,
+      align: "center" as const,
+      render: (_: any, row: MaterialRow) => {
+        if (row.subtitle_status === "ready" && row.subtitle_has_file) {
+          return (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => {
+                setDrawerRow(row);
+                setDrawerOpen(true);
+              }}
+            >
+              查看字幕
             </Button>
-          )}
-          {row.status === "ready" && row.subtitle_status !== "generating" && (
-            <Button size="small" onClick={() => generateSubtitle(row.course_id)}>
-              生成字幕
-            </Button>
-          )}
-          {row.subtitle_status === "ready" && (
-            <>
-              <Button
-                size="small"
-                type={row.review_state === "reviewed" ? "default" : "primary"}
-                onClick={() => toggleReview(row)}
-              >
-                {row.review_state === "reviewed" ? "撤销审核" : "标记已审核"}
-              </Button>
-              <Button size="small" onClick={() => openEditor(row)}>
-                编辑字幕
-              </Button>
-            </>
-          )}
-          <Dropdown
-            menu={{
-              items: FILE_TYPES.map((ft) => ({
-                key: ft.value,
-                label: `重新上传${ft.label}`,
-                onClick: () => setReupload({ courseId: row.course_id, fileType: ft.value }),
-              })),
-            }}
-          >
-            <Button size="small">重新上传</Button>
-          </Dropdown>
-        </Space>
-      ),
-    },
-  ];
-
-  // P4/P5 编辑器表格列
-  const editorColumns = [
-    { title: "#", dataIndex: "idx", width: 48, render: (_: any, _r: any, i: number) => i + 1 },
-    {
-      title: "开始(s)",
-      dataIndex: "start",
-      width: 130,
-      render: (_: any, _r: any, i: number) => (
-        <Space direction="vertical" size={0}>
-          <InputNumber
-            min={0}
-            step={0.1}
-            value={editCues[i]?.start}
-            onChange={(v) => changeCue(i, "start", v ?? 0)}
-            style={{ width: 110 }}
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {secToStr(editCues[i]?.start || 0)}
-          </Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: "结束(s)",
-      dataIndex: "end",
-      width: 130,
-      render: (_: any, _r: any, i: number) => (
-        <Space direction="vertical" size={0}>
-          <InputNumber
-            min={0}
-            step={0.1}
-            value={editCues[i]?.end}
-            onChange={(v) => changeCue(i, "end", v ?? 0)}
-            style={{ width: 110 }}
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {secToStr(editCues[i]?.end || 0)}
-          </Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: "字幕文本",
-      dataIndex: "text",
-      render: (_: any, _r: any, i: number) => (
-        <Input.TextArea
-          autoSize={{ minRows: 1, maxRows: 3 }}
-          value={editCues[i]?.text}
-          onChange={(e) => changeCue(i, "text", e.target.value)}
-        />
-      ),
-    },
-    {
-      title: "抽查",
-      width: 96,
-      render: (_: any, _r: any, i: number) => {
-        const reason = suspiciousReason(editCues[i]);
-        return reason ? <Tag color="warning">{reason}</Tag> : <Tag color="success">正常</Tag>;
+          );
+        }
+        return <span style={{ color: "#ccc" }}>—</span>;
       },
     },
     {
-      title: "操作",
-      width: 150,
-      render: (_: any, _r: any, i: number) => (
-        <Space size={0}>
-          <Button size="small" onClick={() => locateCue(editCues[i]?.start || 0)}>
-            定位
-          </Button>
-          <Button size="small" onClick={() => moveCue(i, -1)} disabled={i === 0}>
-            ↑
-          </Button>
-          <Button size="small" onClick={() => moveCue(i, 1)} disabled={i === editCues.length - 1}>
-            ↓
-          </Button>
-          <Popconfirm title="删除这条字幕？" onConfirm={() => delCue(i)}>
-            <Button size="small" danger>
-              删
-            </Button>
-          </Popconfirm>
-        </Space>
+      title: "更多",
+      key: "more",
+      width: 60,
+      align: "center" as const,
+      fixed: "right" as const,
+      render: (_: any, row: MaterialRow) => (
+        <Dropdown
+          menu={{
+            items: [
+              // v8：只放已实现的「重新上传」。删除功能未实现 → 不显示占位入口（原则 P2）
+              {
+                key: "reupload",
+                label: "重新上传",
+                icon: <UploadOutlined />,
+                onClick: () => setReupload({ courseId: row.course_id, fileType: "video" }),
+              },
+            ],
+          }}
+        >
+          <Button type="text" size="small" icon={<MoreOutlined />} />
+        </Dropdown>
       ),
     },
   ];
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+      {/* 页面级操作：同步素材库状态，不属于字幕工作流 */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           素材管理
         </Typography.Title>
-        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
-          上传文件
-        </Button>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={scanAll}>
+            重新扫描素材
+          </Button>
+          <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
+            上传文件
+          </Button>
+        </Space>
       </div>
-      <Table rowKey="course_id" loading={loading} columns={columns} dataSource={list} pagination={false} />
 
-      <Modal title="上传文件" open={uploadOpen} onOk={doUpload} onCancel={() => setUploadOpen(false)} okText="上传" confirmLoading={uploading}>
+      {/* 动作优先：默认先选动作，进入对应模式后才出现选择列。 */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          minHeight: 40,
+          marginBottom: 12,
+          padding: "4px 12px",
+          borderRadius: 6,
+          background: batchMode ? "#f0f5ff" : "transparent",
+          transition: "background 0.2s",
+        }}
+      >
+        {batchMode === null ? (
+          <Space wrap>
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              disabled={globalBatchIds.generateIds.length === 0}
+              onClick={() => startBatch("generate")}
+            >
+              生成字幕
+            </Button>
+            <Button
+              danger
+              icon={<StopOutlined />}
+              disabled={globalBatchIds.cancelIds.length === 0}
+              onClick={() => startBatch("cancel")}
+            >
+              取消生成
+            </Button>
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: "mark",
+                    label: `标记为已审核（${globalBatchIds.reviewableIds.length}）`,
+                    icon: <CheckCircleOutlined />,
+                    disabled: globalBatchIds.reviewableIds.length === 0,
+                    onClick: () => startBatch("review", "mark"),
+                  },
+                  {
+                    key: "unmark",
+                    label: `撤销已审核（${globalBatchIds.unreviewableIds.length}）`,
+                    icon: <UndoOutlined />,
+                    disabled: globalBatchIds.unreviewableIds.length === 0,
+                    onClick: () => startBatch("review", "revoke"),
+                  },
+                ],
+              }}
+            >
+              <Button
+                icon={<CheckCircleOutlined />}
+                disabled={
+                  globalBatchIds.reviewableIds.length + globalBatchIds.unreviewableIds.length === 0
+                }
+              >
+                审核状态 <DownOutlined />
+              </Button>
+            </Dropdown>
+          </Space>
+        ) : (
+          <Space wrap>
+            <Typography.Text>
+              {batchMode === "generate"
+                ? "请选择要生成字幕的素材"
+                : batchMode === "cancel"
+                  ? "请选择要取消生成的素材"
+                  : reviewTarget === "mark"
+                    ? "请选择要标记已审核的字幕"
+                    : "请选择要撤销审核的字幕"}
+            </Typography.Text>
+            <Button onClick={exitBatch} disabled={batchBusy}>
+              取消选择
+            </Button>
+            {batchMode === "generate" && (
+              <Button
+                type="primary"
+                loading={batchBusy}
+                disabled={generateIds.length === 0}
+                onClick={() =>
+                  runBatch("批量生成字幕", adminMaterials.batchGenerateSubtitle, generateIds)
+                }
+              >
+                开始生成字幕（{generateIds.length}）
+              </Button>
+            )}
+            {batchMode === "cancel" && (
+              <Button
+                danger
+                loading={batchBusy}
+                disabled={cancelIds.length === 0}
+                onClick={() =>
+                  runBatch("批量取消生成", adminMaterials.batchCancelSubtitle, cancelIds)
+                }
+              >
+                取消生成（{cancelIds.length}）
+              </Button>
+            )}
+            {batchMode === "review" && reviewTarget === "mark" && (
+              <Button
+                loading={batchBusy}
+                disabled={reviewableIds.length === 0}
+                onClick={() =>
+                  runBatch(
+                    "批量标记已审核",
+                    (ids) => adminMaterials.batchReview(ids, "reviewed"),
+                    reviewableIds,
+                  )
+                }
+              >
+                标记为已审核（{reviewableIds.length}）
+              </Button>
+            )}
+            {batchMode === "review" && reviewTarget === "revoke" && (
+              <Button
+                loading={batchBusy}
+                disabled={unreviewableIds.length === 0}
+                onClick={() =>
+                  runBatch(
+                    "批量撤销已审核",
+                    (ids) => adminMaterials.batchReview(ids, "unreviewed"),
+                    unreviewableIds,
+                  )
+                }
+              >
+                撤销已审核（{unreviewableIds.length}）
+              </Button>
+            )}
+          </Space>
+        )}
+      </div>
+
+      <Table
+        rowKey="course_id"
+        loading={loading}
+        columns={columns}
+        dataSource={list}
+        pagination={false}
+        scroll={{ x: 1280 }}
+        rowSelection={batchMode ? {
+          selectedRowKeys: selectedKeys,
+          onChange: (keys) => setSelectedKeys(keys.map(String)),
+          getCheckboxProps: (row) => ({ disabled: !canSelect(row, batchMode, reviewTarget) }),
+          preserveSelectedRowKeys: true,
+          columnWidth: 48,
+        } : undefined}
+      />
+
+      <Modal
+        title="上传文件"
+        open={uploadOpen}
+        onOk={doUpload}
+        onCancel={closeUpload}
+        okText="上传"
+        confirmLoading={uploading}
+      >
         <Form
           form={uploadForm}
           layout="vertical"
           initialValues={{ file_type: "video", course_type: "theory" }}
         >
-          <Form.Item name="course_id" label="课程 ID" rules={[{ required: true }]}>
-            <Input placeholder="如 course-001" />
+          <Form.Item label="文件" required>
+            <Upload
+              beforeUpload={() => false}
+              fileList={fileList}
+              onChange={({ fileList }) => selectUploadFile(fileList)}
+            >
+              <Button icon={<UploadOutlined />}>选择文件</Button>
+            </Upload>
+          </Form.Item>
+          <Form.Item name="course_id" label="课程标识" rules={[{ required: true }]}>
+            <Input placeholder="如 004.Spring - 容器和组件" />
           </Form.Item>
           <Form.Item name="file_type" label="文件类型" rules={[{ required: true }]}>
             <Select options={FILE_TYPES} />
@@ -518,15 +695,6 @@ export default function Materials() {
               </Form.Item>
             </>
           )}
-          <Form.Item label="文件" required>
-            <Upload
-              beforeUpload={() => false}
-              fileList={fileList}
-              onChange={({ fileList }) => setFileList(fileList.slice(-1))}
-            >
-              <Button icon={<UploadOutlined />}>选择文件</Button>
-            </Upload>
-          </Form.Item>
           {uploading && <Progress percent={progress} />}
         </Form>
       </Modal>
@@ -558,49 +726,16 @@ export default function Materials() {
         {uploading && <Progress percent={progress} />}
       </Modal>
 
-      {/* P4 编辑器 + P5 人工抽查：编辑 cue 表格、可疑高亮、定位对照、标记审核 */}
-      <Modal
-        title="字幕编辑 / 人工抽查"
-        open={editOpen}
-        onOk={saveCues}
-        onCancel={() => setEditOpen(false)}
-        okText="保存字幕"
-        confirmLoading={editSaving}
-        width={920}
-        destroyOnClose
-      >
-        {editRow && (
-          <Space style={{ marginBottom: 12 }}>
-            <Typography.Text>课程 {editRow.course_id}</Typography.Text>
-            <Typography.Text type="secondary">
-              审核状态：
-              <Tag color={editRow.review_state === "reviewed" ? "green" : "orange"}>
-                {editRow.review_state === "reviewed" ? "已审核" : "未审核"}
-              </Tag>
-            </Typography.Text>
-            <Button
-              size="small"
-              onClick={() => editRow && toggleReview(editRow)}
-            >
-              {editRow.review_state === "reviewed" ? "撤销审核" : "标记为已审核"}
-            </Button>
-          </Space>
-        )}
-        <Table
-          rowKey={(_, i) => String(i)}
-          size="small"
-          pagination={false}
-          columns={editorColumns}
-          dataSource={editCues}
-          scroll={{ y: 360 }}
-        />
-        <Button type="dashed" block style={{ marginTop: 12 }} onClick={addCue}>
-          + 新增一条字幕
-        </Button>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-          提示：保存后会自动复位为「未审核」，需重新人工抽查；黄色标记为超长（&gt;12s）/空文本等可疑项。
-        </Typography.Paragraph>
-      </Modal>
+      {/* 字幕工作区：查看 ⇄ 编辑在同一个 Drawer 内切换（不弹窗套弹窗） */}
+      <SubtitleDrawer
+        key={drawerRow?.course_id ?? "none"}
+        open={drawerOpen}
+        row={drawerRow as SubtitleDrawerRow | null}
+        onClose={() => setDrawerOpen(false)}
+        onSaved={fetchMaterials}
+        onRegenerate={generateSubtitle}
+        onReviewToggle={toggleReview}
+      />
     </div>
   );
 }

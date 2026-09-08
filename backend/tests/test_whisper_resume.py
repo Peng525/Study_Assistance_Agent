@@ -132,12 +132,16 @@ def test_cancel_during_generation_keeps_completed_parts(tmp_path, monkeypatch):
     # 让 slice0 转写完成后置位取消请求，下一轮循环顶部检测即触发取消
     orig = whisper_service._transcribe_slice
 
-    def fake_ts(model, slice_path, initial_prompt, language, retries):
+    def fake_ts(model, slice_path, initial_prompt, language, retries, course_id):
         m = re.search(r"slice(\d+)", slice_path)
         i = int(m.group(1)) if m else 0
+        # ⚠️ 必须在 orig **返回之后**才置位，才对得上本用例的注释"slice0 转写完成后"。
+        # 若在调用前置位，v9 新增的 _iter_segments 会在转写中途就抛 _CancelledError，
+        # 这一片根本没转完 —— 那是对的（取消应立即停），但测不到"已完成片保留供续跑"。
+        result = orig(model, slice_path, initial_prompt, language, retries, course_id)
         if i == 0:
             whisper_service._cancel_requested.add(course_id)
-        return orig(model, slice_path, initial_prompt, language, retries)
+        return result
 
     monkeypatch.setattr(whisper_service, "_transcribe_slice", fake_ts)
 

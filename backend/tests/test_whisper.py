@@ -31,23 +31,57 @@ def reset_whisper_state():
     whisper_service._cancel_requested.clear()
 
 
-def test_get_status_default_pending():
-    st = whisper_service.get_status("c1")
-    assert st["status"] == "pending"
+def test_peek_status_returns_none_for_unknown_course():
+    """peek_status 对陌生 course_id 返回 None —— **绝不创建** TaskState。
+
+    `get_status()`（会为任意 course_id 凭空造一个 PENDING TaskState）已被删除，
+    本用例就是那条删除的守卫：列表端点对 N 行逐行调用时，
+    凭空造状态会让 `active_task_count()` 灌水、让"可取消的行"出现鬼影。
+    """
+    assert whisper_service.peek_status("never-enqueued") is None
+    assert whisper_service.active_task_count() == 0, "查询不得产生任何任务"
+    assert whisper_service.task_exists("never-enqueued") is False
 
 
 def test_cancel_pending_task():
+    """排队中取消：返回 "queued"，任务被**完整移除**（出队 + 清 runtime）。
+
+    旧断言用的是 `get_status(...)["status"] == "error"`，两处都已改变：
+    ① 取消不再是 error 语义（取消 → DB 写 pending，runtime 直接消失）；
+    ② 不再有会凭空造状态的 get_status。
+    """
     whisper_service._tasks["c1"] = TaskState(course_id="c1", status="pending")
     whisper_service._queue.append("c1")
-    assert whisper_service.cancel("c1") is True
-    assert whisper_service.get_status("c1")["status"] == "error"
+    assert whisper_service.cancel("c1") == "queued"
+    assert whisper_service._queue == [], "必须出队，否则 worker 还会捡起来跑"
+    assert "c1" not in whisper_service._tasks, (
+        "必须清 runtime：留着会让 active_task_count() 虚高，"
+        "且列表端点的 subtitle_task_active 会把这行显示成仍可取消（鬼影入口）"
+    )
 
 
 def test_cancel_generating_accepted():
-    """P2：生成中（generating）也允许取消，置位 _cancel_requested 供 worker 切片间检测。"""
+    """P2：生成中（generating）也允许取消，置位 _cancel_requested 供 worker 在 7 个检测点响应。"""
     whisper_service._tasks["c1"] = TaskState(course_id="c1", status="generating")
-    assert whisper_service.cancel("c1") is True
+    assert whisper_service.cancel("c1") == "generating"
     assert "c1" in whisper_service._cancel_requested
+
+
+def test_cancel_nonexistent_task_returns_none():
+    """没有真实任务时必须返回 None —— 调用方据此报错，禁止假成功。
+
+    DB 写着 generating 而 runtime 无任务（进程重启残留）就是这种情况。
+    返回 True 会让管理员以为取消了，任务其实还在跑。
+    """
+    assert whisper_service.cancel("never-enqueued") is None
+
+
+def test_cancel_finished_task_returns_none():
+    """已结束的任务（ready/error）不可取消 —— 已完成的转写没有"取消"这回事。"""
+    whisper_service._tasks["c1"] = TaskState(course_id="c1", status="ready")
+    assert whisper_service.cancel("c1") is None
+    whisper_service._tasks["c1"] = TaskState(course_id="c1", status="error")
+    assert whisper_service.cancel("c1") is None
 
 
 def test_active_task_count():
@@ -303,7 +337,7 @@ def test_write_back_to_db_success(monkeypatch):
     monkeypatch.setattr(whisper_service, "SessionLocal", lambda: FakeDB())
 
     whisper_service._write_back_to_db(
-        course_id="c1", success=True, vtt_path="/fake/c1.vtt"
+        course_id="c1", outcome="success", vtt_path="/fake/c1.vtt"
     )
 
     m = captured["material"]
@@ -347,7 +381,7 @@ def test_write_back_to_db_failure(monkeypatch):
 
     long_err = "x" * 3000
     whisper_service._write_back_to_db(
-        course_id="c1", success=False, error=long_err
+        course_id="c1", outcome="failed", error=long_err
     )
 
     m = captured["material"]
@@ -384,5 +418,5 @@ def test_write_back_to_db_no_material(monkeypatch):
 
     # 不应抛异常
     whisper_service._write_back_to_db(
-        course_id="ghost", success=True, vtt_path="/x.vtt"
+        course_id="ghost", outcome="success", vtt_path="/x.vtt"
     )

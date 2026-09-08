@@ -2,8 +2,10 @@
 
 ## 项目事实来源
 
-- 开始工作前先读 `agent.md`、`.workbuddy/memory/MEMORY.md`、最新一份 `.workbuddy/memory/YYYY-MM-DD.md`。
+- 开始工作前先读 `agent.md`、`.workbuddy/memory/MEMORY.md`、最新一份 `.workbuddy/memory/YYYY-MM-DD.md`，以及 **`docs/00-handover/接手文档.md`**。
 - 需求以 `docs/01-requirements/prd.md` 的最新确认项为准；实现状态以最新 memory、`docs/04-quality/第一次完整检查报告-v1.md` 和当前代码为准。
+- **当前进度与待办清单以 `docs/00-handover/接手文档.md` 为唯一权威源**（SessionStart 会自动注入其开头）。旧清单 `docs/05-delivery/v1交付后未完成功能清单.md` 已改封存为只读，不要再往里加待办。
+- **完成任何业务代码 / 测试 / 依赖改动后，必须同步更新接手文档**：第 4 章需求完成情况、第 5 章待办状态与实际完成日期、6.2 更新日志（时间 + commit + 一句话摘要）。有钩子会提醒，但**钩子只是提醒，不构成完成标准**，由改动的人负责。
 - 文档中出现冲突时，优先级为：用户当前指令 > 最新 memory/变更记录 > PRD 最新确认项 > 架构文档 > 原始提议书。
 - 项目当前是已完成核心功能的 Phase 0 产品，不是尚未搭建的空项目。
 

@@ -57,8 +57,14 @@ class Settings(BaseSettings):
     # 模型尺寸：tiny/base/small/medium/large-v3。
     # Demo 验证阶段默认 small（约 480MB）；中文质量不够时改 medium（约 1.5GB），无需改代码。
     whisper_model_size: str = "small"
-    # 推理设备：auto（有 CUDA 就用 GPU，否则 CPU）/ cpu / cuda
-    whisper_device: str = "auto"
+    # 推理设备：cuda（默认，优先用 GPU）/ cpu（显式降级）/ auto（能用 GPU 就用，否则静默回 CPU）
+    # RTX 4070 + CUDA 12 下 small 模型转写 60s 音频约 2~3 秒，比 CPU int8 快 6~7 倍。
+    # ⚠️ 默认 **不是** auto：auto 只靠 `get_cuda_device_count()` 判断，
+    # 它只说明"驱动报告有设备"，**不保证 CUDA 运行库（cublas64_12.dll 等）可加载**。
+    # 本机就踩过：device_count=1 但缺 cublas，结果推理时静默挂起而不是报错。
+    # 显式 cuda 现在会做**真实可用性探测**，不可用即 fail fast 并报出缺失依赖；
+    # 需要降级时设环境变量 `WHISPER_DEVICE=cpu`（不改动本文件）。
+    whisper_device: str = "cuda"
     # 计算精度：default（GPU 用 float16，CPU 用 int8）/ int8 / float16 / float32
     whisper_compute_type: str = "default"
     # 转写语言：zh 表示中文；空字符串表示让模型自动检测

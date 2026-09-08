@@ -13,9 +13,9 @@ def _now() -> datetime:
 
 
 # ---- 字幕审核状态（A3）----
-# 与 subtitle_status 正交分工，不要混成一个字段：
-#   subtitle_status  字幕「有没有生成好」  pending / generating / ready / error
-#   review_state     字幕「能不能作为自动 AI 证据」  unreviewed / reviewed
+# 以下是两个正交维度，各自独立回答一个问题，不要混成一个字段：
+#   subtitle_status    字幕「有没有生成好」      pending / generating / ready / error（仅 4 个真值）
+#   review_state       字幕「能不能作为自动 AI 证据」  unreviewed / reviewed
 # 生成完成（ready）不等于审核通过（reviewed）；
 # 未审核的字幕允许展示、允许被用户主动引用，但**不得**自动注入 ±180 秒 Transcript Context。
 SUBTITLE_REVIEW_UNREVIEWED = "unreviewed"
