@@ -122,6 +122,23 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
+class ContentSeries(Base):
+    """A project-scoped course column independent from its optional PPT."""
+
+    __tablename__ = "content_series"
+    __table_args__ = (
+        UniqueConstraint("project_id", "normalized_name", name="uq_content_series_project_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    context_epoch: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class ProjectMaterial(Base):
     """项目与课程视频的关联；P0 默认所有视频属于唯一项目。"""
 
@@ -144,6 +161,9 @@ class ProjectSource(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("content_series.id"), unique=True, index=True, nullable=True
+    )
     original_filename: Mapped[str] = mapped_column(String(256), nullable=False)
     source_format: Mapped[str] = mapped_column(String(16), nullable=False)
     file_path: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -178,6 +198,9 @@ class VideoKnowledge(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     material_id: Mapped[int] = mapped_column(
         ForeignKey("materials.id"), unique=True, index=True, nullable=False
+    )
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("content_series.id"), index=True, nullable=True
     )
     source_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_sources.id"), index=True, nullable=True
@@ -266,22 +289,26 @@ class ChatSession(Base):
 
 
 class ColumnChatSession(Base):
-    """A user's single persistent conversation for one PPT column."""
+    """A user's single persistent conversation for one content series."""
 
     __tablename__ = "column_chat_sessions"
     __table_args__ = (
-        UniqueConstraint("user_id", "source_id", name="uq_column_chat_user_source"),
+        UniqueConstraint("user_id", "series_id", name="uq_column_chat_user_series"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    source_id: Mapped[int] = mapped_column(
-        ForeignKey("project_sources.id"), index=True, nullable=False
+    series_id: Mapped[int] = mapped_column(
+        ForeignKey("content_series.id"), index=True, nullable=False
+    )
+    source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_sources.id"), index=True, nullable=True
     )
     session_id: Mapped[str] = mapped_column(
         ForeignKey("chat_sessions.session_id"), unique=True, index=True, nullable=False
     )
     memory_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    memory_context_epoch: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     summarized_through_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
@@ -328,6 +355,9 @@ class LLMCallLog(Base):
     course_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     video_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     source_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("content_series.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     start_time: Mapped[float | None] = mapped_column(Float, nullable=True)
     user_question: Mapped[str] = mapped_column(Text, nullable=False)
     request_messages_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)

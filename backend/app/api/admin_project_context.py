@@ -10,8 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.admin_model_configs import get_default_config
@@ -20,6 +21,7 @@ from app.core.database import get_db
 from app.core.security import decrypt_api_key
 from app.models.models import (
     Material,
+    ContentSeries,
     ProjectContextVersion,
     ProjectMaterial,
     ProjectSource,
@@ -34,9 +36,12 @@ from app.services.model_router import RoutingOutcome, stream_model_chain
 from app.services.project_context import (
     SUMMARY_SOURCE_TOKEN_LIMIT,
     active_sources,
+    advance_series_epoch,
+    current_series_source,
     ensure_default_project,
     estimate_tokens,
     ensure_video_knowledge,
+    invalidate_series_courseware,
     latest_draft_version,
     latest_published_version,
     manifest_json,
@@ -46,6 +51,7 @@ from app.services.project_context import (
     select_ppt_page_text,
     snapshot_chunks,
     source_storage_root,
+    series_has_context,
 )
 
 router = APIRouter(prefix="/api/admin/project-context", tags=["admin-project-context"])
@@ -84,12 +90,17 @@ class SourceOutlineUpdate(BaseModel):
     outline_text: str = ""
 
 
+class SeriesAssignment(BaseModel):
+    series_id: int
+
+
 def _serialize_source(
     source: ProjectSource,
     outline: ProjectSourceOutline | None = None,
 ) -> dict:
     return {
         "id": source.id,
+        "series_id": source.series_id,
         "filename": source.original_filename,
         "column_name": Path(source.original_filename).stem,
         "format": source.source_format,
@@ -115,6 +126,7 @@ def _serialize_video_knowledge(
         "course_id": material.course_id,
         "video_name": material.video_original_filename or material.course_id,
         "course_type": knowledge.course_type if knowledge else "theory",
+        "series_id": knowledge.series_id if knowledge else None,
         "source_id": knowledge.source_id if knowledge else None,
         "source_filename": source.original_filename if source else None,
         "page_start": knowledge.page_start if knowledge else None,
@@ -272,11 +284,24 @@ def get_project_context(
 @router.post("/sources")
 async def upload_project_source(
     file: UploadFile,
+    series_id: int | None = Form(default=None),
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     project = ensure_default_project(db)
     original_filename = file.filename or ""
+    series = db.get(ContentSeries, series_id) if series_id is not None else None
+    if series_id is not None and (series is None or series.project_id != project.id):
+        raise HTTPException(status_code=404, detail="专栏不存在")
+    if series is not None:
+        if Path(original_filename).suffix.casefold() != ".pptx":
+            raise HTTPException(status_code=400, detail="专栏课件仅支持 PPTX")
+        existing_source = current_series_source(db, series.id)
+        if existing_source is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "该专栏已有课件，请使用更换课件", "source_id": existing_source.id},
+            )
     name_key = unicodedata.normalize("NFC", original_filename).casefold()
     duplicate = next(
         (
@@ -286,7 +311,7 @@ async def upload_project_source(
         ),
         None,
     )
-    if duplicate is not None:
+    if series is None and duplicate is not None:
         raise HTTPException(
             status_code=409,
             detail={"message": "同名课件已上传，是否覆盖现有专栏？", "source_id": duplicate.id},
@@ -298,6 +323,7 @@ async def upload_project_source(
     try:
         source = ProjectSource(
             project_id=project.id,
+            series_id=series.id if series else None,
             original_filename=original_filename,
             source_format=destination.suffix.lstrip("."),
             file_path=str(destination),
@@ -307,7 +333,10 @@ async def upload_project_source(
         )
         db.add(source)
         db.flush()
-        mark_published_stale(db, project.id)
+        if series is not None and series_has_context(db, series):
+            advance_series_epoch(db, series)
+        elif series is None:
+            mark_published_stale(db, project.id)
         db.commit()
         db.refresh(source)
         return {
@@ -316,9 +345,15 @@ async def upload_project_source(
             "summary_refresh_required": True,
         }
     except HTTPException:
+        db.rollback()
         destination.unlink(missing_ok=True)
         raise
+    except IntegrityError:
+        db.rollback()
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=409, detail="该专栏已有当前课件，请刷新后重试") from None
     except Exception:
+        db.rollback()
         destination.unlink(missing_ok=True)
         raise
 
@@ -339,16 +374,21 @@ async def replace_project_source(
     if source is None:
         raise HTTPException(status_code=404, detail="课件不存在")
     incoming_name = file.filename or ""
-    if unicodedata.normalize("NFC", incoming_name).casefold() != unicodedata.normalize(
+    if source.series_id is None and unicodedata.normalize("NFC", incoming_name).casefold() != unicodedata.normalize(
         "NFC", source.original_filename
     ).casefold():
         raise HTTPException(status_code=400, detail="覆盖文件必须与原课件同名")
+    if source.series_id is not None and Path(incoming_name).suffix.casefold() != ".pptx":
+        raise HTTPException(status_code=400, detail="专栏课件仅支持 PPTX")
 
     new_path, extracted_text, source_hash, warning = await _store_source_upload(
         file, project.project_key
     )
     if source_hash == source.source_hash:
         new_path.unlink(missing_ok=True)
+        source.original_filename = incoming_name
+        db.add(source)
+        db.commit()
         outline = db.query(ProjectSourceOutline).filter(
             ProjectSourceOutline.source_id == source.id
         ).first()
@@ -372,16 +412,24 @@ async def replace_project_source(
         if outline is not None:
             outline.status = "stale"
             db.add(outline)
-        affected = db.query(VideoKnowledge).filter(VideoKnowledge.source_id == source.id).all()
-        for knowledge in affected:
-            knowledge.knowledge_text_cached = None
-            knowledge.knowledge_text_path = None
-            knowledge.outline_text_cached = None
-            knowledge.outline_text_path = None
-            knowledge.outline_status = "empty"
-            db.add(knowledge)
+        if source.series_id is not None:
+            series = db.get(ContentSeries, source.series_id)
+            affected_count = invalidate_series_courseware(db, source.series_id)
+            if series is not None:
+                advance_series_epoch(db, series)
+            affected = [None] * affected_count
+        else:
+            affected = db.query(VideoKnowledge).filter(VideoKnowledge.source_id == source.id).all()
+            for knowledge in affected:
+                knowledge.knowledge_text_cached = None
+                knowledge.knowledge_text_path = None
+                knowledge.outline_text_cached = None
+                knowledge.outline_text_path = None
+                knowledge.outline_status = "empty"
+                db.add(knowledge)
         db.add(source)
-        mark_published_stale(db, project.id)
+        if source.series_id is None:
+            mark_published_stale(db, project.id)
         db.commit()
         db.refresh(source)
     except Exception:
@@ -416,7 +464,7 @@ def delete_project_source(
     if source is None:
         raise HTTPException(status_code=404, detail="项目资料不存在")
     referenced = db.query(VideoKnowledge).filter(VideoKnowledge.source_id == source.id).count()
-    if referenced:
+    if source.series_id is None and referenced:
         raise HTTPException(
             status_code=409,
             detail=f"该课件已被 {referenced} 个视频引用，请先重新绑定这些视频",
@@ -425,9 +473,23 @@ def delete_project_source(
     root = source_storage_root()
     if path.is_relative_to(root):
         path.unlink(missing_ok=True)
+    old_series_id = source.series_id
+    if old_series_id is not None:
+        series = db.get(ContentSeries, old_series_id)
+        invalidate_series_courseware(db, old_series_id)
+        if series is not None:
+            advance_series_epoch(db, series)
+        source.series_id = None
+        outline = db.query(ProjectSourceOutline).filter(
+            ProjectSourceOutline.source_id == source.id
+        ).first()
+        if outline is not None:
+            outline.status = "stale"
+            db.add(outline)
     source.status = "deleted"
     db.add(source)
-    mark_published_stale(db, project.id)
+    if old_series_id is None:
+        mark_published_stale(db, project.id)
     db.commit()
     return {"message": "项目资料已删除", "summary_refresh_required": True}
 
@@ -565,6 +627,30 @@ def update_video_course_type(
     return {"video": _serialize_video_knowledge(material, knowledge, source)}
 
 
+@router.put("/videos/{course_id}/series")
+def assign_video_series(
+    course_id: str,
+    body: SeriesAssignment,
+    current: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    material = _get_material(db, course_id)
+    project = ensure_default_project(db)
+    series = db.query(ContentSeries).filter(
+        ContentSeries.id == body.series_id,
+        ContentSeries.project_id == project.id,
+    ).first()
+    if series is None:
+        raise HTTPException(status_code=404, detail="专栏不存在")
+    knowledge = ensure_video_knowledge(db, material)
+    if knowledge.series_id is not None:
+        raise HTTPException(status_code=409, detail="视频已经归入专栏，不能跨专栏移动")
+    knowledge.series_id = series.id
+    db.add(knowledge)
+    db.commit()
+    return {"video": _serialize_video_knowledge(material, knowledge, None)}
+
+
 @router.put("/videos/{course_id}/knowledge")
 def build_video_knowledge(
     course_id: str,
@@ -581,6 +667,8 @@ def build_video_knowledge(
     ).first()
     if source is None:
         raise HTTPException(status_code=404, detail="课件不存在")
+    if source.series_id is None:
+        raise HTTPException(status_code=400, detail="项目背景资料不能作为专栏视频课件")
     pages = ppt_pages(source)
     if not pages:
         raise HTTPException(status_code=400, detail="该课件没有可选择的 PPT 文本页")
@@ -601,6 +689,10 @@ def build_video_knowledge(
         f"{selected}"
     )
     knowledge = ensure_video_knowledge(db, material, body.course_type)
+    if knowledge.series_id is None:
+        knowledge.series_id = source.series_id
+    elif knowledge.series_id != source.series_id:
+        raise HTTPException(status_code=409, detail="课件不属于该视频所在专栏")
     knowledge.source_id = source.id
     knowledge.page_start = body.page_start
     knowledge.page_end = body.page_end

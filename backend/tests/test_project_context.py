@@ -12,6 +12,10 @@ from app.core.database import get_db
 from app.core.security import create_access_token, encrypt_api_key, hash_password
 from app.models.models import (
     ChatContextBinding,
+    ChatMessage,
+    ChatSession,
+    ColumnChatSession,
+    ContentSeries,
     Material,
     ModelConfig,
     ProjectChunk,
@@ -192,6 +196,9 @@ def test_summary_draft_has_no_independent_2k_limit(client):
 
 def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_path):
     project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.flush()
     materials = [
         Material(course_id="video-a", dir_path=str(tmp_path / "materials/video-a"), status="ready"),
         Material(course_id="video-b", dir_path=str(tmp_path / "materials/video-b"), status="ready"),
@@ -202,6 +209,7 @@ def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_p
         bind_material(db_session, material, project)
     source = ProjectSource(
         project_id=project.id,
+        series_id=series.id,
         original_filename="Spring.pptx",
         source_format="pptx",
         file_path=str(tmp_path / "Spring.pptx"),
@@ -245,7 +253,11 @@ def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_p
     in_use = client.delete(
         f"/api/admin/project-context/sources/{source.id}", headers=_headers()
     )
-    assert in_use.status_code == 409
+    assert in_use.status_code == 200
+    for knowledge in db_session.query(VideoKnowledge).order_by(VideoKnowledge.id).all():
+        db_session.refresh(knowledge)
+        assert knowledge.series_id == series.id
+        assert knowledge.source_id is None
 
 
 def test_source_outline_is_draft_until_admin_saves_it(client, db_session, tmp_path):
@@ -464,3 +476,61 @@ def test_large_source_uses_chinese_fts_and_superseded_version_remains_available(
     fallback_chunks, fallback_mode = select_evidence_chunks(db_session, version, "？")
     assert fallback_mode == "fallback"
     assert len(build_evidence_text(fallback_chunks)) <= PROJECT_EVIDENCE_TOKEN_BUDGET
+
+
+def test_series_ppt_changes_advance_context_epoch_and_keep_video(client, db_session, tmp_path):
+    project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.flush()
+    session = ChatSession(session_id="series-chat", user_id=1, messages_json="[]")
+    binding = ColumnChatSession(user_id=1, series_id=series.id, session_id=session.session_id)
+    db_session.add_all([session, binding])
+    db_session.flush()
+    db_session.add(ChatMessage(
+        session_id=session.session_id, turn_id="old", role="user", content="旧问题"
+    ))
+    material = Material(
+        course_id="spring-video", dir_path=str(tmp_path / "spring-video"),
+        video_path=str(tmp_path / "spring-video.mp4"), subtitle_status="ready",
+        review_state="reviewed", status="ready",
+    )
+    db_session.add(material)
+    db_session.flush()
+    knowledge = VideoKnowledge(material_id=material.id, series_id=series.id)
+    db_session.add(knowledge)
+    db_session.commit()
+
+    first_ppt = _pptx_bytes("第一版")
+    uploaded = client.post(
+        "/api/admin/project-context/sources",
+        data={"series_id": str(series.id)},
+        files={"file": ("Spring.pptx", first_ppt, "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=_headers(),
+    )
+    assert uploaded.status_code == 200
+    source_id = uploaded.json()["source"]["id"]
+    db_session.refresh(series)
+    assert series.context_epoch == 2
+
+    same = client.put(
+        f"/api/admin/project-context/sources/{source_id}",
+        files={"file": ("Spring-renamed.pptx", first_ppt, "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=_headers(),
+    )
+    assert same.status_code == 200 and same.json()["unchanged"] is True
+    db_session.refresh(series)
+    assert series.context_epoch == 2
+
+    changed = client.put(
+        f"/api/admin/project-context/sources/{source_id}",
+        files={"file": ("Spring-v2.pptx", _pptx_bytes("第二版"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=_headers(),
+    )
+    assert changed.status_code == 200
+    db_session.refresh(series)
+    db_session.refresh(knowledge)
+    db_session.refresh(material)
+    assert series.context_epoch == 3
+    assert knowledge.series_id == series.id and knowledge.source_id is None
+    assert material.subtitle_status == "ready" and material.review_state == "reviewed"

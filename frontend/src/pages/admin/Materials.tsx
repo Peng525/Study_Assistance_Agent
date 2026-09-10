@@ -21,7 +21,6 @@ import {
   LoadingOutlined,
   MoreOutlined,
   PlayCircleOutlined,
-  ReloadOutlined,
   StopOutlined,
   UndoOutlined,
   UploadOutlined,
@@ -60,11 +59,16 @@ interface MaterialRow {
   course_type?: "theory" | "practice" | null;
   source_id?: number | null;
   source_filename?: string | null;
+  series_id?: number | null;
+  series_name?: string | null;
   scanned_at?: string | null;
   duration?: number | null;
 }
 
-interface ColumnOption { id: number; filename: string; column_name: string; format: string; }
+interface MaterialsProps {
+  seriesId: number;
+  onConfigureKnowledge?: (courseId: string) => void;
+}
 
 const FILE_TYPES = [
   { value: "video", label: "视频（mp4/webm）" },
@@ -87,9 +91,8 @@ function ElapsedTimer({ since }: { since: number }) {
   );
 }
 
-export default function Materials() {
+export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsProps) {
   const [list, setList] = useState<MaterialRow[]>([]);
-  const [columnsList, setColumnsList] = useState<ColumnOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
@@ -109,11 +112,8 @@ export default function Materials() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.get("/materials"), api.get("/admin/project-context")])
-      .then(([materials, context]) => {
-        setList(materials.data);
-        setColumnsList(context.data.sources.filter((item: ColumnOption) => item.format === "pptx"));
-      })
+    api.get("/materials")
+      .then((materials) => setList(materials.data))
       .finally(() => setLoading(false));
   };
 
@@ -166,11 +166,13 @@ export default function Materials() {
   };
 
   // ---- 批量操作（v8 §5.5A.5）----
-  const selectedRows = list.filter(
+  const scopedList = list.filter((row) => row.series_id === seriesId);
+
+  const selectedRows = scopedList.filter(
     (r) => selectedKeys.includes(r.course_id) && canSelect(r, batchMode, reviewTarget),
   );
   const { generateIds, cancelIds, reviewableIds, unreviewableIds } = pickBatchIds(selectedRows);
-  const globalBatchIds = pickBatchIds(list);
+  const globalBatchIds = pickBatchIds(scopedList);
 
   const startBatch = (
     mode: Exclude<BatchMode, null>,
@@ -218,17 +220,7 @@ export default function Materials() {
     }
   };
 
-  const scanAll = async () => {
-    try {
-      const r = await adminMaterials.scanAll();
-      message.success(r?.message || "扫描完成");
-      load();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || "扫描失败");
-    }
-  };
-
-  const generating = list.some((r) => r.subtitle_status === "generating");
+  const generating = scopedList.some((r) => r.subtitle_status === "generating");
   const pollingRef = useRef(false);
   useEffect(() => {
     if (!generating) return;
@@ -266,7 +258,7 @@ export default function Materials() {
     setProgress(0);
     try {
       await adminMaterials.upload(
-        { courseId, fileType, file, courseType, sourceId },
+        { courseId, fileType, file, courseType, sourceId, seriesId },
         (e) => {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
         },
@@ -284,13 +276,13 @@ export default function Materials() {
   };
 
   const doUpload = async () => {
-    const { course_id, file_type, course_type, source_id } = await uploadForm.validateFields();
+    const { course_id, file_type, course_type } = await uploadForm.validateFields();
     const file = fileList[0]?.originFileObj || fileList[0];
     if (!file) {
       message.warning("请选择文件");
       return;
     }
-    const ok = await uploadFile(course_id, file_type, file, course_type || "theory", source_id);
+    const ok = await uploadFile(course_id, file_type, file, course_type || "theory");
     if (ok) {
       closeUpload();
     }
@@ -421,12 +413,6 @@ export default function Materials() {
       ),
     },
     {
-      title: "所属专栏",
-      dataIndex: "source_filename",
-      width: 160,
-      render: (value: string) => value || "待归类",
-    },
-    {
       // v8 §5.5A.2：这一列只回答"有字幕吗、能进去看吗"。
       // 没有真实字幕就显示 —，绝不画灰色假图标（原则 P2）。
       title: "字幕",
@@ -460,15 +446,13 @@ export default function Materials() {
       render: (_: any, row: MaterialRow) => (
         <Dropdown
           menu={{
-            items: [
-              // v8：只放已实现的「重新上传」。删除功能未实现 → 不显示占位入口（原则 P2）
-              {
-                key: "reupload",
-                label: "重新上传",
-                icon: <UploadOutlined />,
-                onClick: () => setReupload({ courseId: row.course_id, fileType: "video" }),
-              },
-            ],
+            items: [{
+              key: "knowledge", label: "配置课程知识",
+              onClick: () => onConfigureKnowledge?.(row.course_id),
+            }, {
+              key: "reupload", label: "重新上传", icon: <UploadOutlined />,
+              onClick: () => setReupload({ courseId: row.course_id, fileType: "video" }),
+            }],
           }}
         >
           <Button type="text" size="small" icon={<MoreOutlined />} />
@@ -479,19 +463,8 @@ export default function Materials() {
 
   return (
     <div>
-      {/* 页面级操作：同步素材库状态，不属于字幕工作流 */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          素材管理
-        </Typography.Title>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={scanAll}>
-            重新扫描素材
-          </Button>
-          <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
-            上传文件
-          </Button>
-        </Space>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>上传视频</Button>
       </div>
 
       {/* 动作优先：默认先选动作，进入对应模式后才出现选择列。 */}
@@ -632,9 +605,9 @@ export default function Materials() {
         rowKey="course_id"
         loading={loading}
         columns={columns}
-        dataSource={list}
+        dataSource={scopedList}
         pagination={false}
-        scroll={{ x: 1280 }}
+        scroll={{ x: 900 }}
         rowSelection={batchMode ? {
           selectedRowKeys: selectedKeys,
           onChange: (keys) => setSelectedKeys(keys.map(String)),
@@ -645,7 +618,7 @@ export default function Materials() {
       />
 
       <Modal
-        title="上传文件"
+        title="上传视频"
         open={uploadOpen}
         onOk={doUpload}
         onCancel={closeUpload}
@@ -669,22 +642,9 @@ export default function Materials() {
           <Form.Item name="course_id" label="课程标识" rules={[{ required: true }]}>
             <Input placeholder="如 004.Spring - 容器和组件" />
           </Form.Item>
-          <Form.Item name="file_type" label="文件类型" rules={[{ required: true }]}>
-            <Select options={FILE_TYPES} />
-          </Form.Item>
+          <Form.Item name="file_type" hidden><Input /></Form.Item>
           {uploadFileType === "video" && (
             <>
-              <Form.Item
-                name="source_id"
-                label="所属专栏"
-                extra={columnsList.length ? "视频上传后会直接归入所选 PPT 专栏。" : "还没有 PPT 专栏，请先到“专栏管理 → 上传课件”。"}
-                rules={[{ required: true, message: "请选择所属专栏" }]}
-              >
-                <Select
-                  placeholder="选择 PPT 专栏"
-                  options={columnsList.map((item) => ({ value: item.id, label: item.column_name || item.filename }))}
-                />
-              </Form.Item>
               <Form.Item
                 name="course_type"
                 label="课程类型"

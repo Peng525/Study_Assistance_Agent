@@ -19,6 +19,7 @@ from app.models.models import (
     ChatContextBinding,
     ChatSession,
     ColumnChatSession,
+    ContentSeries,
     Material,
     ModelConfig,
     ProjectSource,
@@ -32,6 +33,7 @@ from app.services.llm_client import stream_chat
 from app.services.llm_audit import create_call_log, update_call_log
 from app.services.model_router import RoutingOutcome, stream_model_chain
 from app.services.project_context import (
+    current_series_source,
     get_project_for_material,
     latest_published_version,
     version_context,
@@ -69,6 +71,7 @@ def _create_chat_audit(
     messages: list[dict] | None = None,
     status: str = "running",
     error_message: str | None = None,
+    series_id: int | None = None,
 ) -> int | None:
     exact_messages = messages or []
     return create_call_log(
@@ -80,6 +83,7 @@ def _create_chat_audit(
         course_id=body.course_id,
         video_name=video_name,
         source_id=source_id,
+        series_id=series_id,
         start_time=body.start_time,
         user_question=body.user_question,
         request_messages_json=json.dumps(exact_messages, ensure_ascii=False),
@@ -123,7 +127,7 @@ def _import_legacy_column_history(
         .join(VideoKnowledge, VideoKnowledge.material_id == Material.id)
         .filter(
             ChatSession.user_id == column_session.user_id,
-            VideoKnowledge.source_id == column_session.source_id,
+            VideoKnowledge.series_id == column_session.series_id,
             ChatSession.id != canonical_session.id,
         )
         .order_by(ChatSession.created_at.asc(), ChatSession.id.asc())
@@ -168,11 +172,14 @@ def _import_legacy_column_history(
 
 
 def _get_or_create_column_session(
-    db: Session, user_id: int, source: ProjectSource
+    db: Session,
+    user_id: int,
+    series: ContentSeries,
+    source: ProjectSource | None,
 ) -> tuple[ColumnChatSession, ChatSession]:
     column_session = db.query(ColumnChatSession).filter(
         ColumnChatSession.user_id == user_id,
-        ColumnChatSession.source_id == source.id,
+        ColumnChatSession.series_id == series.id,
     ).first()
     if column_session is not None:
         session = db.query(ChatSession).filter(
@@ -192,8 +199,10 @@ def _get_or_create_column_session(
     db.flush()
     column_session = ColumnChatSession(
         user_id=user_id,
-        source_id=source.id,
+        series_id=series.id,
+        source_id=source.id if source else None,
         session_id=session.session_id,
+        memory_context_epoch=series.context_epoch,
     )
     db.add(column_session)
     db.flush()
@@ -207,13 +216,24 @@ def _get_or_create_column_session(
     return column_session, session
 
 
-def _column_messages(db: Session, session_id: str) -> list[ChatMessage]:
-    return (
+def _message_epoch(message: ChatMessage) -> int:
+    try:
+        value = json.loads(message.context_meta_json or "{}").get("series_context_epoch", 1)
+        return int(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 1
+
+
+def _column_messages(
+    db: Session, session_id: str, context_epoch: int | None = None
+) -> list[ChatMessage]:
+    rows = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
         .order_by(ChatMessage.id.asc())
         .all()
     )
+    return rows if context_epoch is None else [row for row in rows if _message_epoch(row) == context_epoch]
 
 
 def _compatibility_mirror(messages: list[ChatMessage]) -> list[dict]:
@@ -246,7 +266,14 @@ async def _maybe_update_memory(
     all_messages: list[ChatMessage],
     config: ModelConfig,
     api_key: str,
+    context_epoch: int,
 ) -> list[ChatMessage]:
+    if column_session.memory_context_epoch != context_epoch:
+        column_session.memory_summary = ""
+        column_session.summarized_through_message_id = None
+        column_session.memory_context_epoch = context_epoch
+        db.add(column_session)
+        db.commit()
     old_messages = all_messages[:-RECENT_COLUMN_MESSAGES]
     pending = [
         item
@@ -304,30 +331,29 @@ def get_column_session(
         if material
         else None
     )
-    source = (
-        db.query(ProjectSource).filter(
-            ProjectSource.id == knowledge.source_id,
-            ProjectSource.status == "active",
-        ).first()
-        if knowledge and knowledge.source_id
-        else None
-    )
-    if source is None:
+    series = db.get(ContentSeries, knowledge.series_id) if knowledge and knowledge.series_id else None
+    if series is None:
         raise HTTPException(status_code=404, detail="当前视频尚未归入专栏")
-    column_session, session = _get_or_create_column_session(db, current.id, source)
+    source = current_series_source(db, series.id)
+    column_session, session = _get_or_create_column_session(db, current.id, series, source)
     messages = _column_messages(db, session.session_id)
+    context_changed = any(_message_epoch(item) != series.context_epoch for item in messages)
     return {
         "session_id": session.session_id,
         "column": {
-            "source_id": source.id,
-            "name": Path(source.original_filename).stem,
+            "series_id": series.id,
+            "source_id": source.id if source else None,
+            "name": series.name,
             "current_video_name": material.video_original_filename or course_id,
+            "context_epoch": series.context_epoch,
+            "context_changed": context_changed,
         },
         "messages": [_message_dict(item) for item in messages],
         "memory": {
             "has_summary": bool(column_session.memory_summary.strip()),
             "summarized_through_message_id": column_session.summarized_through_message_id,
             "legacy_history_may_be_incomplete": True,
+            "context_epoch": series.context_epoch,
         },
     }
 
@@ -345,6 +371,7 @@ async def chat_stream(
     transcript = ""
     material = None
     video_knowledge = None
+    video_series = None
     video_source = None
     source_outline = None
     if body.course_id:
@@ -353,11 +380,9 @@ async def chat_stream(
             video_knowledge = db.query(VideoKnowledge).filter(
                 VideoKnowledge.material_id == material.id
             ).first()
-            if video_knowledge and video_knowledge.source_id:
-                video_source = db.query(ProjectSource).filter(
-                    ProjectSource.id == video_knowledge.source_id,
-                    ProjectSource.status == "active",
-                ).first()
+            if video_knowledge and video_knowledge.series_id:
+                video_series = db.get(ContentSeries, video_knowledge.series_id)
+                video_source = current_series_source(db, video_knowledge.series_id)
                 if video_source is not None:
                     source_outline = db.query(ProjectSourceOutline).filter(
                         ProjectSourceOutline.source_id == video_source.id
@@ -384,8 +409,10 @@ async def chat_stream(
     session = None
     column_session = None
     complete_messages: list[ChatMessage] = []
-    if video_source is not None:
-        column_session, session = _get_or_create_column_session(db, current.id, video_source)
+    if video_series is not None:
+        column_session, session = _get_or_create_column_session(
+            db, current.id, video_series, video_source
+        )
         if body.session_id and body.session_id != session.session_id:
             requested = db.query(ChatSession).filter(
                 ChatSession.session_id == body.session_id
@@ -393,7 +420,9 @@ async def chat_stream(
             if requested is not None and requested.user_id != current.id:
                 raise HTTPException(status_code=403, detail="无权访问该会话")
             raise HTTPException(status_code=409, detail="会话不属于当前专栏，请刷新后重试")
-        complete_messages = _column_messages(db, session.session_id)
+        complete_messages = _column_messages(
+            db, session.session_id, video_series.context_epoch
+        )
         history = [
             {"role": item.role, "content": item.content}
             for item in complete_messages[-RECENT_COLUMN_MESSAGES:]
@@ -432,65 +461,43 @@ async def chat_stream(
     binding = db.query(ChatContextBinding).filter(
         ChatContextBinding.session_id == session_id
     ).first()
+    project = get_project_for_material(db, material)
+    if binding is None and project is not None:
+        published = latest_published_version(db, project.id)
+        if published is not None:
+            binding = ChatContextBinding(
+                session_id=session_id,
+                project_id=project.id,
+                context_version_id=published.id,
+            )
+    project_summary, project_evidence, context_meta = version_context(
+        db, binding, body.user_question
+    )
     column_outline = ""
-    if video_knowledge is not None and video_source is not None:
+    if video_knowledge is not None and video_series is not None:
         # 已归栏视频统一使用专栏总大纲和本视频页原文；课程类型只用于后台分类。
         courseware_text = video_knowledge.knowledge_text_cached or ""
         courseware_has_chapters = False
         if (
-            source_outline is not None
+            video_source is not None
+            and source_outline is not None
             and source_outline.status == "ready"
             and source_outline.source_hash == video_source.source_hash
         ):
             column_outline = source_outline.outline_text
-        project_summary = ""
-        project_evidence = ""
-        context_meta = {
+        context_meta.update({
             "course_type": video_knowledge.course_type,
             "column_outline_included": bool(column_outline),
-            "source_id": video_source.id,
-            "source_hash": video_source.source_hash,
+            "series_id": video_series.id,
+            "series_name": video_series.name,
+            "series_context_epoch": video_series.context_epoch,
+            "source_id": video_source.id if video_source else None,
+            "source_hash": video_source.source_hash if video_source else None,
             "page_start": video_knowledge.page_start,
             "page_end": video_knowledge.page_end,
             "courseware_text_included": bool(courseware_text.strip()),
             "subtitle_included_in_knowledge": video_knowledge.subtitle_included,
-        }
-    elif binding is not None:
-        # 已开始的旧会话继续固定原 Summary，避免管理员分类后多轮上下文突然漂移。
-        project_summary, project_evidence, context_meta = version_context(
-            db, binding, body.user_question
-        )
-    else:
-        # 兼容尚未建立视频知识配置的旧数据与旧会话。
-        project = get_project_for_material(db, material)
-        if project is not None:
-            published = latest_published_version(db, project.id)
-            if published is not None:
-                binding = ChatContextBinding(
-                    session_id=session_id,
-                    project_id=project.id,
-                    context_version_id=published.id,
-                )
-        project_summary, project_evidence, context_meta = version_context(
-            db, binding, body.user_question
-        )
-    if video_source is not None and not courseware_text.strip():
-        _create_chat_audit(
-            audit_bind,
-            current,
-            body,
-            session_id,
-            video_source.id,
-            material.video_original_filename if material else None,
-            status="rejected",
-            error_message="当前视频课程证据尚未配置或课件已更新",
-        )
-        async def missing_courseware_gen():
-            yield "data: " + json.dumps(
-                {"error": "当前视频课程证据尚未配置或课件已更新，请联系管理员重新选择页区间并生成课程文本"},
-                ensure_ascii=False,
-            ) + "\n\n"
-        return StreamingResponse(missing_courseware_gen(), media_type="text/event-stream")
+        })
     title = (
         material.video_original_filename
         if material and material.video_original_filename
@@ -528,6 +535,7 @@ async def chat_stream(
             title,
             status="rejected",
             error_message="未配置大模型",
+            series_id=video_series.id if video_series else None,
         )
         async def no_cfg_gen():
             yield "data: " + json.dumps({"error": "未配置大模型，请联系管理员"}, ensure_ascii=False) + "\n\n"
@@ -544,6 +552,7 @@ async def chat_stream(
             title,
             status="rejected",
             error_message="大模型 API Key 无效",
+            series_id=video_series.id if video_series else None,
         )
         async def bad_key_gen():
             yield "data: " + json.dumps({"error": "大模型 API Key 无效，请联系管理员检查配置"}, ensure_ascii=False) + "\n\n"
@@ -552,7 +561,12 @@ async def chat_stream(
     memory_summary = ""
     if column_session is not None:
         pending_memory = await _maybe_update_memory(
-            db, column_session, complete_messages, cfg, api_key
+            db,
+            column_session,
+            complete_messages,
+            cfg,
+            api_key,
+            video_series.context_epoch,
         )
         memory_parts = [column_session.memory_summary.strip(), _pending_memory_text(pending_memory)]
         memory_summary = "\n\n".join(part for part in memory_parts if part)
@@ -584,6 +598,7 @@ async def chat_stream(
             title,
             status="rejected",
             error_message=notice,
+            series_id=video_series.id if video_series else None,
         )
         async def reject_gen():
             yield "data: " + json.dumps({"error": notice}, ensure_ascii=False) + "\n\n"
@@ -625,6 +640,7 @@ async def chat_stream(
         video_source.id if video_source else None,
         title,
         messages=messages,
+        series_id=video_series.id if video_series else None,
     )
     turn_id = uuid.uuid4().hex
 
@@ -684,6 +700,7 @@ async def chat_stream(
                             video_name=title,
                             start_time=body.start_time,
                             model_config_id=config_id,
+                            context_epoch=video_series.context_epoch,
                         )
                     else:
                         _append_turn_atomic(
@@ -768,6 +785,7 @@ def _append_column_turn(
     video_name: str,
     start_time: float | None,
     model_config_id: int,
+    context_epoch: int,
 ) -> None:
     """Persist one successful final pair and update only the recent compatibility mirror."""
     common = {
@@ -777,7 +795,12 @@ def _append_column_turn(
         "video_name": video_name,
         "start_time": start_time,
     }
-    db.add(ChatMessage(role="user", content=user_message["content"], **common))
+    db.add(ChatMessage(
+        role="user",
+        content=user_message["content"],
+        context_meta_json=json.dumps({"series_context_epoch": context_epoch}),
+        **common,
+    ))
     db.add(
         ChatMessage(
             role="assistant",
@@ -785,6 +808,7 @@ def _append_column_turn(
             model_name=assistant_message.get("model_name"),
             context_meta_json=json.dumps(
                 {
+                    "series_context_epoch": context_epoch,
                     "context_meta": assistant_message.get("context_meta") or {},
                     "model_route_id": assistant_message.get("model_route_id"),
                     "attempted_models": assistant_message.get("attempted_models") or [],

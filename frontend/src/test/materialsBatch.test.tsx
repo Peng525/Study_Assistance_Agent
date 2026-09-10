@@ -27,6 +27,7 @@ vi.mock("antd", async (importOriginal) => {
 
 const mk = (r: Record<string, unknown>) => ({
   status: "ready",
+  series_id: 1,
   courseware_format: "pptx",
   course_type: "theory",
   source_filename: "Spring.pptx",
@@ -100,7 +101,7 @@ describe("动作优先批量操作（PRD AC-7 / AC-19）", () => {
   };
 
   it("默认页常驻三个动作且不显示选择列", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-reviewed");
 
     expect(screen.getByRole("button", { name: /生成字幕$/ })).toBeInTheDocument();
@@ -110,7 +111,7 @@ describe("动作优先批量操作（PRD AC-7 / AC-19）", () => {
   });
 
   it("审核入口按全表分别显示标记和撤销数量", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-reviewed");
 
     const items = await openReviewMenu();
@@ -121,7 +122,7 @@ describe("动作优先批量操作（PRD AC-7 / AC-19）", () => {
   });
 
   it("标记审核模式只允许未审核行，且只显示当前主操作", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-reviewed");
     const items = await openReviewMenu();
     fireEvent.click(items[0]);
@@ -135,7 +136,7 @@ describe("动作优先批量操作（PRD AC-7 / AC-19）", () => {
   });
 
   it("撤销审核模式只允许已审核行，且只显示当前主操作", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-reviewed");
     const items = await openReviewMenu();
     fireEvent.click(items[1]);
@@ -149,9 +150,9 @@ describe("动作优先批量操作（PRD AC-7 / AC-19）", () => {
   });
 });
 
-describe("素材管理页批量操作（PRD v8 §5.5A.5）", () => {
+describe("专栏视频批量操作（PRD v8 §5.5A.5）", () => {
   it("表头不再有「操作」列，单行操作收进「更多」下拉", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     expect(await screen.findByText("c-pending")).toBeInTheDocument();
     expect(screen.queryByText("操作")).not.toBeInTheDocument();
     // 「更多」既出现在表头，也出现在每一行的下拉触发器上
@@ -163,13 +164,13 @@ describe("素材管理页批量操作（PRD v8 §5.5A.5）", () => {
   // 它照样是绿的（v8 时就是这样漏掉了 AC-4 不通过）。
   // "进度真的在动"由 materialsPolling.test.tsx 断言 —— 那里让首屏与轮询返回不同的值。
   it("生成中的行按给定进度渲染出百分比与切片计数", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     expect(await screen.findByText("生成中 78%")).toBeInTheDocument();
     expect(screen.getByText("35 / 45")).toBeInTheDocument();
   });
 
   it("点生成字幕后才出现选择列，N=0 时确认按钮禁用", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-pending");
     fireEvent.click(screen.getByRole("button", { name: /生成字幕$/ }));
 
@@ -178,7 +179,7 @@ describe("素材管理页批量操作（PRD v8 §5.5A.5）", () => {
   });
 
   it("选择后再确认，只提交 pending + error 的 ID", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-pending");
     fireEvent.click(screen.getByRole("button", { name: /生成字幕$/ }));
     await selectAll();
@@ -199,7 +200,7 @@ describe("素材管理页批量操作（PRD v8 §5.5A.5）", () => {
         { course_id: "c-error", ok: false, error: "任务启动失败" },
       ],
     });
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-pending");
     fireEvent.click(screen.getByRole("button", { name: /生成字幕$/ }));
     await selectAll();
@@ -217,7 +218,7 @@ describe("素材管理页批量操作（PRD v8 §5.5A.5）", () => {
   });
 
   it("退出选择模式不发 API，并恢复默认工具栏", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c-pending");
     fireEvent.click(screen.getByRole("button", { name: /生成字幕$/ }));
     await selectAll();
@@ -231,7 +232,7 @@ describe("素材管理页批量操作（PRD v8 §5.5A.5）", () => {
   });
 
   it("已 ready 的行给出「查看字幕」入口，未生成的行不画假图标", async () => {
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     expect(await screen.findByText("c-pending")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /查看字幕/ }).length).toBe(2);
   });

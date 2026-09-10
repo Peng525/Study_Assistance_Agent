@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 from sqlalchemy import func, text
@@ -13,6 +14,10 @@ from sqlalchemy.orm import Session
 from app.core.config import PROJECT_ROOT, settings
 from app.models.models import (
     ChatContextBinding,
+    ChatMessage,
+    ChatSession,
+    ColumnChatSession,
+    ContentSeries,
     Material,
     Project,
     ProjectChunk,
@@ -114,12 +119,70 @@ def get_project_for_material(db: Session, material: Material | None) -> Project 
 
 
 def active_sources(db: Session, project_id: int) -> list[ProjectSource]:
+    """Project-level sources only; series courseware is a separate context layer."""
     return (
         db.query(ProjectSource)
-        .filter(ProjectSource.project_id == project_id, ProjectSource.status == "active")
+        .filter(
+            ProjectSource.project_id == project_id,
+            ProjectSource.status == "active",
+            ProjectSource.series_id.is_(None),
+        )
         .order_by(ProjectSource.id.asc())
         .all()
     )
+
+
+def normalize_series_name(value: str) -> tuple[str, str]:
+    name = unicodedata.normalize("NFC", value.strip())
+    return name, name.casefold()
+
+
+def current_series_source(db: Session, series_id: int) -> ProjectSource | None:
+    return db.query(ProjectSource).filter(
+        ProjectSource.series_id == series_id,
+        ProjectSource.status == "active",
+    ).first()
+
+
+def series_has_context(db: Session, series: ContentSeries) -> bool:
+    sessions = db.query(ColumnChatSession).filter(ColumnChatSession.series_id == series.id).all()
+    for binding in sessions:
+        if binding.memory_summary.strip() or binding.summarized_through_message_id is not None:
+            return True
+        if db.query(ChatMessage.id).filter(ChatMessage.session_id == binding.session_id).first():
+            return True
+        session = db.query(ChatSession).filter(ChatSession.session_id == binding.session_id).first()
+        if session and session.messages_json not in {"", "[]"}:
+            return True
+    return False
+
+
+def advance_series_epoch(db: Session, series: ContentSeries) -> None:
+    series.context_epoch += 1
+    db.add(series)
+    for binding in db.query(ColumnChatSession).filter(
+        ColumnChatSession.series_id == series.id
+    ).all():
+        binding.memory_summary = ""
+        binding.summarized_through_message_id = None
+        binding.memory_context_epoch = series.context_epoch
+        db.add(binding)
+
+
+def invalidate_series_courseware(db: Session, series_id: int) -> int:
+    affected = db.query(VideoKnowledge).filter(VideoKnowledge.series_id == series_id).all()
+    for knowledge in affected:
+        knowledge.source_id = None
+        knowledge.page_start = None
+        knowledge.page_end = None
+        knowledge.knowledge_text_cached = None
+        knowledge.knowledge_text_path = None
+        knowledge.outline_text_cached = None
+        knowledge.outline_text_path = None
+        knowledge.outline_status = "empty"
+        knowledge.subtitle_included = False
+        db.add(knowledge)
+    return len(affected)
 
 
 _PPT_PAGE_HEADING = re.compile(r"(?m)^【第(\d+)页(?:\s+([^】]*))?】\s*$")

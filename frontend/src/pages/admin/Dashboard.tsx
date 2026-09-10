@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button, Card, Col, Row, Space, Statistic, Typography } from "antd";
-import { ApiOutlined, FolderOutlined, TeamOutlined } from "@ant-design/icons";
+import { ApiOutlined, BookOutlined, TeamOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 
@@ -63,8 +63,8 @@ export default function Dashboard() {
           <Button icon={<ApiOutlined />} onClick={() => navigate("/admin/model-configs")}>
             模型配置
           </Button>
-          <Button icon={<FolderOutlined />} onClick={() => navigate("/admin/materials")}>
-            素材管理
+          <Button icon={<BookOutlined />} onClick={() => navigate("/admin/columns")}>
+            专栏管理
           </Button>
           <Button icon={<TeamOutlined />} onClick={() => navigate("/admin/users")}>
             用户管理

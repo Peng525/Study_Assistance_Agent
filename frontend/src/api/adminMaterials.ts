@@ -38,6 +38,7 @@ export const adminMaterials = {
       file: File;
       courseType?: string;
       sourceId?: number;
+      seriesId?: number;
     },
     onUploadProgress?: (e: any) => void,
   ) => {
@@ -48,6 +49,7 @@ export const adminMaterials = {
       file_type: p.fileType,
       course_type: p.courseType || "theory",
       ...(p.sourceId ? { source_id: String(p.sourceId) } : {}),
+      ...(p.seriesId ? { series_id: String(p.seriesId) } : {}),
     });
     return api
       .post(`/admin/materials/upload?${q}`, fd, {

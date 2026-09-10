@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.api.admin_materials import router as materials_router
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password
-from app.models.models import Material, ProjectSource, User, VideoKnowledge
+from app.models.models import ContentSeries, Material, ProjectSource, User, VideoKnowledge
 from app.services import storage
 from app.services import whisper_service
 from app.services.project_context import ensure_default_project
@@ -74,8 +74,12 @@ def test_upload_video_can_select_practice_and_reject_path_course_id(client, db_s
 
 def test_upload_video_can_bind_ppt_column(client, db_session, tmp_path):
     project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.flush()
     source = ProjectSource(
         project_id=project.id,
+        series_id=series.id,
         original_filename="Spring.pptx",
         source_format="pptx",
         file_path=str(tmp_path / "Spring.pptx"),
@@ -95,6 +99,7 @@ def test_upload_video_can_bind_ppt_column(client, db_session, tmp_path):
     material = db_session.query(Material).filter_by(course_id="spring-1").one()
     knowledge = db_session.query(VideoKnowledge).filter_by(material_id=material.id).one()
     assert knowledge.source_id == source.id
+    assert knowledge.series_id == series.id
 
     invalid = client.post(
         "/api/admin/materials/upload",

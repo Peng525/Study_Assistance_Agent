@@ -483,3 +483,14 @@ body {
   min-height: 100%;
   flex-direction: column;
 }
+
+/* 专栏内是两个完整内容页，用卡片式边界避免 Tab 看起来像普通文字。 */
+.admin-card-tabs > .ant-tabs-nav .ant-tabs-tab {
+  border-color: var(--border);
+  background: var(--bg-panel);
+}
+
+.admin-card-tabs > .ant-tabs-nav .ant-tabs-tab-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--bg-panel));
+}

@@ -18,6 +18,7 @@ from app.models.models import (
     ChatContextBinding,
     ChatSession,
     ColumnChatSession,
+    ContentSeries,
     LLMCallLog,
     Material,
     ModelConfig,
@@ -413,8 +414,12 @@ def test_column_context_is_same_for_theory_and_practice(client, db_session, monk
     from app.services.project_context import ensure_default_project
 
     project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.flush()
     source = ProjectSource(
         project_id=project.id,
+        series_id=series.id,
         original_filename="Spring.pptx",
         source_format="pptx",
         file_path="Spring.pptx",
@@ -444,6 +449,7 @@ def test_column_context_is_same_for_theory_and_practice(client, db_session, monk
     db_session.flush()
     theory_context = VideoKnowledge(
         material_id=theory.id,
+        series_id=series.id,
         source_id=source.id,
         course_type="theory",
         page_start=1,
@@ -454,6 +460,7 @@ def test_column_context_is_same_for_theory_and_practice(client, db_session, monk
     )
     practice_context = VideoKnowledge(
         material_id=practice.id,
+        series_id=series.id,
         source_id=source.id,
         course_type="practice",
         page_start=3,
@@ -510,16 +517,32 @@ def test_column_context_is_same_for_theory_and_practice(client, db_session, monk
     assert "READY_COLUMN_OUTLINE" not in draft_prompt
     assert "THEORY_PAGE_TEXT" in draft_prompt
 
+    source_outline.status = "ready"
+    source_outline.source_hash = "outdated-source-hash"
+    db_session.add(source_outline)
+    db_session.commit()
+    client.post(
+        "/api/chat/stream",
+        json={"course_id": "theory-video", "user_question": "再解释一次"},
+        headers=_user_h(),
+    )
+    stale_prompt = "\n".join(item["content"] for item in captured[-1])
+    assert "READY_COLUMN_OUTLINE" not in stale_prompt
+    assert "THEORY_PAGE_TEXT" in stale_prompt
 
-def test_mapped_video_without_course_text_is_rejected_before_model_call(
-    client, db_session, monkeypatch
+
+def test_mapped_video_without_course_text_uses_no_courseware_fallback(
+    client, db_session
 ):
-    from app.api import chat
     from app.services.project_context import ensure_default_project
 
     project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.flush()
     source = ProjectSource(
         project_id=project.id,
+        series_id=series.id,
         original_filename="Spring.pptx",
         source_format="pptx",
         file_path="Spring.pptx",
@@ -532,6 +555,7 @@ def test_mapped_video_without_course_text_is_rejected_before_model_call(
     db_session.flush()
     db_session.add(VideoKnowledge(
         material_id=material.id,
+        series_id=series.id,
         source_id=source.id,
         course_type="theory",
         page_start=1,
@@ -540,18 +564,14 @@ def test_mapped_video_without_course_text_is_rejected_before_model_call(
     ))
     db_session.commit()
 
-    async def should_not_call(*args, **kwargs):
-        raise AssertionError("课程文本缺失时不应调用模型")
-        yield  # pragma: no cover
-
-    monkeypatch.setattr(chat, "stream_chat", should_not_call)
     response = client.post(
         "/api/chat/stream",
         json={"course_id": "stale-video", "user_question": "当前课程讲了什么"},
         headers=_user_h(),
     )
     assert response.status_code == 200
-    assert any("课程证据尚未配置" in event.get("error", "") for event in _parse_sse(response))
+    assert any(event.get("done") for event in _parse_sse(response))
+    assert not any(event.get("error") for event in _parse_sse(response))
 
 
 def test_clear_session(client, db_session):
@@ -681,8 +701,17 @@ def _add_column(db_session, *, filename="Spring.pptx", courses=("video-003", "vi
     from app.services.project_context import ensure_default_project
 
     project = ensure_default_project(db_session)
+    name = filename.rsplit(".", 1)[0]
+    series = ContentSeries(
+        project_id=project.id,
+        name=name,
+        normalized_name=name.casefold(),
+    )
+    db_session.add(series)
+    db_session.flush()
     source = ProjectSource(
         project_id=project.id,
+        series_id=series.id,
         original_filename=filename,
         source_format="pptx",
         file_path=filename,
@@ -705,6 +734,7 @@ def _add_column(db_session, *, filename="Spring.pptx", courses=("video-003", "vi
         db_session.add(
             VideoKnowledge(
                 material_id=material.id,
+                series_id=series.id,
                 source_id=source.id,
                 page_start=index + 1,
                 page_end=index + 2,
@@ -925,6 +955,7 @@ async def test_memory_summary_failure_keeps_pending_history(client, db_session, 
         db_session.query(ChatMessage).order_by(ChatMessage.id.asc()).all(),
         get_default_config(db_session),
         "sk-test",
+        1,
     )
     assert len(pending) == 10
     pending_text = chat._pending_memory_text(pending)
@@ -932,3 +963,53 @@ async def test_memory_summary_failure_keeps_pending_history(client, db_session, 
     assert "回答4" in pending_text
     assert column_session.memory_summary == ""
     assert db_session.query(ChatMessage).count() == 30
+
+
+def test_series_epoch_filters_model_history_but_keeps_ui_history(client, db_session, monkeypatch):
+    from app.api import chat
+
+    source, _ = _add_column(db_session, courses=("epoch-video",))
+    initial = client.get("/api/chat/column-session?course_id=epoch-video", headers=_user_h()).json()
+    session_id = initial["session_id"]
+    series = db_session.get(ContentSeries, source.series_id)
+    series.context_epoch = 2
+    binding = db_session.query(ColumnChatSession).filter_by(session_id=session_id).one()
+    binding.memory_summary = "OLD_MEMORY"
+    binding.memory_context_epoch = 1
+    for epoch, label in ((1, "OLD_HISTORY"), (2, "CURRENT_HISTORY")):
+        db_session.add_all([
+            ChatMessage(
+                session_id=session_id, turn_id=f"{epoch}-u", role="user", content=label,
+                context_meta_json=json.dumps({"series_context_epoch": epoch}),
+            ),
+            ChatMessage(
+                session_id=session_id, turn_id=f"{epoch}-a", role="assistant", content=f"{label}_ANSWER",
+                context_meta_json=json.dumps({"series_context_epoch": epoch}),
+            ),
+        ])
+    db_session.add_all([series, binding])
+    db_session.commit()
+
+    captured = []
+    async def capture_stream(_base_url, _api_key, _model_name, messages):
+        captured.extend(messages)
+        yield "回答"
+    monkeypatch.setattr(chat, "stream_chat", capture_stream)
+    response = client.post(
+        "/api/chat/stream",
+        json={"course_id": "epoch-video", "user_question": "新问题"},
+        headers=_user_h(),
+    )
+    assert response.status_code == 200
+    prompt = "\n".join(item["content"] for item in captured)
+    assert "CURRENT_HISTORY" in prompt
+    assert "OLD_HISTORY" not in prompt
+    assert "OLD_MEMORY" not in prompt
+    db_session.refresh(binding)
+    assert binding.memory_context_epoch == 2 and binding.memory_summary == ""
+
+    restored = client.get(
+        "/api/chat/column-session?course_id=epoch-video", headers=_user_h()
+    ).json()
+    assert restored["column"]["context_changed"] is True
+    assert any(item["content"] == "OLD_HISTORY" for item in restored["messages"])

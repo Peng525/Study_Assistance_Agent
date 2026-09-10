@@ -28,6 +28,7 @@ vi.mock("antd", async (importOriginal) => {
 
 const base = {
   status: "ready",
+  series_id: 1,
   courseware_format: "pptx",
   course_type: "theory",
   scanned_at: "2026-09-05T10:30:00",
@@ -67,7 +68,7 @@ beforeEach(() => {
   });
 });
 
-describe("素材管理页轮询（PRD AC-15 数据源唯一 / AC-4 进度持续变化）", () => {
+describe("专栏视频轮询（PRD AC-15 数据源唯一 / AC-4 进度持续变化）", () => {
   it("进度真的会推进：百分比与切片计数随轮询变化，不是定格在触发瞬间", async () => {
     // ⚠️ 这个用例存在的理由：曾经 `progressMap` 只写不读，渲染吃的是
     // 不会刷新的静态快照，于是百分比定格在触发瞬间 —— 而当时的测试
@@ -89,7 +90,7 @@ describe("素材管理页轮询（PRD AC-15 数据源唯一 / AC-4 进度持续�
       ),
     );
 
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
 
     // 首次渲染：10/45 = 22%
     expect(await screen.findByText("生成中 22%")).toBeInTheDocument();
@@ -115,7 +116,7 @@ describe("素材管理页轮询（PRD AC-15 数据源唯一 / AC-4 进度持续�
     );
     (adminMaterials.listMaterials as any).mockResolvedValue([row(15)]);
 
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     // 轮询间隔是 3s，waitFor 默认只等 1s —— 必须放大超时才能观察到第二轮
     await waitFor(
       () =>
@@ -141,7 +142,7 @@ describe("素材管理页轮询（PRD AC-15 数据源唯一 / AC-4 进度持续�
       { ...base, course_id: "c1", subtitle_status: "ready", review_state: "unreviewed" },
     ]);
 
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c1");
     await new Promise((r) => setTimeout(r, 3400)); // 跨过一个轮询周期
 
@@ -162,7 +163,7 @@ describe("素材管理页轮询（PRD AC-15 数据源唯一 / AC-4 进度持续�
     );
     (adminMaterials.listMaterials as any).mockResolvedValue([row(20), pending]);
 
-    render(<Materials />);
+    render(<Materials seriesId={1} />);
     await screen.findByText("c2");
     fireEvent.click(screen.getByRole("button", { name: /生成字幕$/ }));
     const pendingRow = screen.getByText("c2").closest("tr");

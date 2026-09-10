@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Empty, Input, Typography, message } from "antd";
+import { Alert, Button, Empty, Input, Typography, message } from "antd";
 import { ClearOutlined, SendOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -46,6 +46,7 @@ export default function AISidebar({
   const [historyNotice, setHistoryNotice] = useState("");
   const [currentModel, setCurrentModel] = useState("");
   const [columnName, setColumnName] = useState("");
+  const [contextChanged, setContextChanged] = useState(false);
   const [currentVideoName, setCurrentVideoName] = useState(courseId);
   const [historyLoading, setHistoryLoading] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
@@ -61,6 +62,7 @@ export default function AISidebar({
     setMessages([]);
     setSessionId(null);
     setColumnName("");
+    setContextChanged(false);
     setCurrentVideoName(courseId);
     setCurrentModel("");
     const loadHistory = async () => {
@@ -83,6 +85,7 @@ export default function AISidebar({
         if (!requestInFlightRef.current) setMessages(restored);
         setSessionId(data.session_id);
         setColumnName(data.column?.name || "");
+        setContextChanged(Boolean(data.column?.context_changed));
         setCurrentVideoName(data.column?.current_video_name || courseId);
         const lastAssistant = [...restored].reverse().find((item) => item.role === "assistant");
         setCurrentModel(lastAssistant?.model_name || "");
@@ -304,6 +307,14 @@ export default function AISidebar({
       </div>
 
       <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+        {contextChanged && <Alert
+          type="info"
+          showIcon
+          closable
+          onClose={() => setContextChanged(false)}
+          message="课件已更新，后续回答将基于新版课件。旧对话仅供查看，可清空会话重新开始。"
+          style={{ marginBottom: 12 }}
+        />}
         {messages.length === 0 ? (
           <Empty description="选中字幕右键提问，或直接输入问题" />
         ) : (

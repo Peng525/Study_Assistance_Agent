@@ -13,7 +13,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import create_media_ticket, decode_media_ticket
-from app.models.models import Material, ProjectSource, User, VideoKnowledge
+from app.models.models import ContentSeries, Material, ProjectSource, User, VideoKnowledge
 from app.services import storage
 from app.services import whisper_service
 from app.services.context_builder import parse_vtt_cues
@@ -61,6 +61,8 @@ class MaterialListItem(BaseModel):
     course_type: str | None = None
     source_id: int | None = None
     source_filename: str | None = None
+    series_id: int | None = None
+    series_name: str | None = None
     scanned_at: str | None = None
 
 
@@ -218,6 +220,13 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
         source.id: source.original_filename
         for source in db.query(ProjectSource).filter(ProjectSource.id.in_(source_ids)).all()
     } if source_ids else {}
+    series_ids = {
+        knowledge.series_id for knowledge in knowledge_by_material.values() if knowledge.series_id
+    }
+    series_names = {
+        series.id: series.name
+        for series in db.query(ContentSeries).filter(ContentSeries.id.in_(series_ids)).all()
+    } if series_ids else {}
     return [
         {
             "course_id": m.course_id,
@@ -251,6 +260,10 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
             ),
             "source_id": knowledge_by_material[m.id].source_id if m.id in knowledge_by_material else None,
             "source_filename": source_names.get(knowledge_by_material[m.id].source_id)
+            if m.id in knowledge_by_material
+            else None,
+            "series_id": knowledge_by_material[m.id].series_id if m.id in knowledge_by_material else None,
+            "series_name": series_names.get(knowledge_by_material[m.id].series_id)
             if m.id in knowledge_by_material
             else None,
             "scanned_at": m.scanned_at.isoformat() if m.scanned_at else None,
