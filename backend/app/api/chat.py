@@ -16,7 +16,6 @@ from app.core.database import get_db
 from app.core.security import decrypt_api_key
 from app.models.models import (
     ChatMessage,
-    ChatContextBinding,
     ChatSession,
     ColumnChatSession,
     ContentSeries,
@@ -34,9 +33,6 @@ from app.services.llm_audit import create_call_log, update_call_log
 from app.services.model_router import RoutingOutcome, stream_model_chain
 from app.services.project_context import (
     current_series_source,
-    get_project_for_material,
-    latest_published_version,
-    version_context,
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -391,14 +387,14 @@ async def chat_stream(
             courseware_has_chapters = material.courseware_has_chapters
             # A3：时间窗基准 = 当前播放位置，缺省回退选中字幕起点（兼容老客户端）
             window_anchor = body.current_time if body.current_time is not None else body.start_time
-            if material.subtitle_path and window_anchor is not None:
-                # A3 门控：生成完成(ready) ≠ 可以作为自动证据(reviewed)。
-                # 未审核字幕允许展示、允许主动引用，但不自动注入 ±180 秒上下文。
-                if not transcript_context_allowed(material.subtitle_status, material.review_state):
+            subtitle_path = Path(material.subtitle_path) if material.subtitle_path else None
+            subtitle_has_file = bool(subtitle_path and subtitle_path.is_file())
+            if subtitle_has_file and window_anchor is not None:
+                if not transcript_context_allowed(material.subtitle_status, subtitle_has_file):
                     transcript = ""
                 else:
                     try:
-                        vtt_text = Path(material.subtitle_path).read_text(encoding="utf-8")
+                        vtt_text = subtitle_path.read_text(encoding="utf-8")
                         cues = parse_vtt_cues(vtt_text)
                         transcript = extract_time_window(cues, window_anchor)
                     except Exception:
@@ -458,21 +454,7 @@ async def chat_stream(
 
     session_id = session.session_id if session is not None else (body.session_id or uuid.uuid4().hex)
     audit_bind = db.get_bind()
-    binding = db.query(ChatContextBinding).filter(
-        ChatContextBinding.session_id == session_id
-    ).first()
-    project = get_project_for_material(db, material)
-    if binding is None and project is not None:
-        published = latest_published_version(db, project.id)
-        if published is not None:
-            binding = ChatContextBinding(
-                session_id=session_id,
-                project_id=project.id,
-                context_version_id=published.id,
-            )
-    project_summary, project_evidence, context_meta = version_context(
-        db, binding, body.user_question
-    )
+    context_meta: dict = {}
     column_outline = ""
     if video_knowledge is not None and video_series is not None:
         # 已归栏视频统一使用专栏总大纲和本视频页原文；课程类型只用于后台分类。
@@ -581,8 +563,6 @@ async def chat_stream(
         start_time=body.start_time,
         # 无字幕时不能按播放比例猜课件章节；有逐字稿才允许现有时间映射逻辑。
         video_duration=body.video_duration if transcript else None,
-        project_summary=project_summary,
-        project_evidence=project_evidence,
         column_outline=column_outline,
         memory_summary=memory_summary,
         video_context=video_context,
@@ -622,15 +602,6 @@ async def chat_stream(
         )
         db.add(session)
         db.flush()
-    # 持久化本轮构造 messages 时已经选中的同一版本，不能再次查询 latest。
-    # 否则管理员在两个步骤之间发布新版时，会出现“首答用 V1、会话绑定 V2”。
-    persisted_binding = db.query(ChatContextBinding).filter(
-        ChatContextBinding.session_id == session_id
-    ).first()
-    if persisted_binding is None and binding is not None:
-        db.add(binding)
-        db.flush()
-        persisted_binding = binding
     db.commit()
     audit_log_id = _create_chat_audit(
         audit_bind,
@@ -711,14 +682,9 @@ async def chat_stream(
                             config_id,
                         )
                 elif created_session:
-                    failed_binding = stream_db.query(ChatContextBinding).filter(
-                        ChatContextBinding.session_id == session_id
-                    ).first()
                     failed_session = stream_db.query(ChatSession).filter(
                         ChatSession.session_id == session_id
                     ).first()
-                    if failed_binding is not None:
-                        stream_db.delete(failed_binding)
                     if failed_session is not None:
                         stream_db.delete(failed_session)
                     stream_db.commit()

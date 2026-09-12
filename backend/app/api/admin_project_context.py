@@ -56,6 +56,12 @@ from app.services.project_context import (
 
 router = APIRouter(prefix="/api/admin/project-context", tags=["admin-project-context"])
 
+PROJECT_CONTEXT_RETIRED = "项目级背景已退役，请在专栏中管理课件、大纲和视频"
+
+
+def _project_context_gone() -> None:
+    raise HTTPException(status_code=410, detail=PROJECT_CONTEXT_RETIRED)
+
 SUMMARY_SYSTEM_PROMPT = """你是项目背景资料整理助手。只能依据给定资料生成摘要，不得补充外部事实。
 摘要必须使用中文 Markdown，并固定包含：项目定位、目标、关键术语、整体架构、关键约束、已确认边界、不可推断项、来源清单。
 优先保留项目事实，避免复述和展开无关的通用知识；不设置固定字数上限。
@@ -236,6 +242,7 @@ def get_project_context(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    _project_context_gone()
     project = ensure_default_project(db)
     bindings = (
         db.query(ProjectMaterial)
@@ -288,6 +295,8 @@ async def upload_project_source(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    if series_id is None:
+        _project_context_gone()
     project = ensure_default_project(db)
     original_filename = file.filename or ""
     series = db.get(ContentSeries, series_id) if series_id is not None else None
@@ -373,6 +382,8 @@ async def replace_project_source(
     ).first()
     if source is None:
         raise HTTPException(status_code=404, detail="课件不存在")
+    if source.series_id is None:
+        _project_context_gone()
     incoming_name = file.filename or ""
     if source.series_id is None and unicodedata.normalize("NFC", incoming_name).casefold() != unicodedata.normalize(
         "NFC", source.original_filename
@@ -463,6 +474,8 @@ def delete_project_source(
     ).first()
     if source is None:
         raise HTTPException(status_code=404, detail="项目资料不存在")
+    if source.series_id is None:
+        _project_context_gone()
     referenced = db.query(VideoKnowledge).filter(VideoKnowledge.source_id == source.id).count()
     if source.series_id is None and referenced:
         raise HTTPException(
@@ -505,6 +518,7 @@ def get_source_pages(
         ProjectSource.id == source_id,
         ProjectSource.project_id == project.id,
         ProjectSource.status == "active",
+        ProjectSource.series_id.is_not(None),
     ).first()
     if source is None:
         raise HTTPException(status_code=404, detail="课件不存在")
@@ -525,6 +539,7 @@ async def generate_source_outline(
         ProjectSource.project_id == project.id,
         ProjectSource.status == "active",
         ProjectSource.source_format == "pptx",
+        ProjectSource.series_id.is_not(None),
     ).first()
     if source is None:
         raise HTTPException(status_code=404, detail="PPT 专栏不存在")
@@ -594,6 +609,7 @@ def update_source_outline(
         ProjectSource.project_id == project.id,
         ProjectSource.status == "active",
         ProjectSource.source_format == "pptx",
+        ProjectSource.series_id.is_not(None),
     ).first()
     if source is None:
         raise HTTPException(status_code=404, detail="PPT 专栏不存在")
@@ -714,6 +730,7 @@ async def generate_summary_draft(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    _project_context_gone()
     project = ensure_default_project(db)
     sources = active_sources(db, project.id)
     if not sources:
@@ -770,6 +787,7 @@ def update_summary_draft(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    _project_context_gone()
     project = ensure_default_project(db)
     sources = active_sources(db, project.id)
     if not sources:
@@ -807,6 +825,7 @@ def publish_summary(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    _project_context_gone()
     project = ensure_default_project(db)
     draft = db.query(ProjectContextVersion).filter(
         ProjectContextVersion.id == body.version_id,

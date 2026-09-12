@@ -16,13 +16,10 @@ import {
   message,
 } from "antd";
 import {
-  CheckCircleOutlined,
-  DownOutlined,
   LoadingOutlined,
   MoreOutlined,
   PlayCircleOutlined,
   StopOutlined,
-  UndoOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { api } from "../../api/client";
@@ -30,7 +27,6 @@ import { adminMaterials, BatchResult } from "../../api/adminMaterials";
 import SubtitleDrawer, { SubtitleDrawerRow } from "../../components/SubtitleDrawer";
 import {
   type BatchMode,
-  type ReviewTarget,
   canSelect,
   deriveSubtitleState,
   formatElapsed,
@@ -103,7 +99,6 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
   // v8：批量选择 + 字幕 Drawer 工作区
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [batchMode, setBatchMode] = useState<BatchMode>(null);
-  const [reviewTarget, setReviewTarget] = useState<ReviewTarget>(null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerRow, setDrawerRow] = useState<MaterialRow | null>(null);
@@ -152,12 +147,12 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
     }
   };
 
-  // A4：标记字幕审核状态。生成完成(unreviewed)才可解锁自动证据；已审核可撤销。
+  // 人工校对只表达质量状态，不影响播放器展示或 AI Evidence 准入。
   const toggleReview = async (row: { course_id: string; review_state?: string }) => {
     const next = row.review_state === "reviewed" ? "unreviewed" : "reviewed";
     try {
       await adminMaterials.reviewSubtitle(row.course_id, next);
-      message.success(next === "reviewed" ? "已标记为已审核，解锁自动证据注入" : "已撤销审核");
+      message.success(next === "reviewed" ? "已标记为已校对" : "已撤销校对标记");
       fetchMaterials();
       setDrawerRow((prev) => (prev ? { ...prev, review_state: next } : prev));
     } catch (e: any) {
@@ -169,24 +164,19 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
   const scopedList = list.filter((row) => row.series_id === seriesId);
 
   const selectedRows = scopedList.filter(
-    (r) => selectedKeys.includes(r.course_id) && canSelect(r, batchMode, reviewTarget),
+    (r) => selectedKeys.includes(r.course_id) && canSelect(r, batchMode, null),
   );
-  const { generateIds, cancelIds, reviewableIds, unreviewableIds } = pickBatchIds(selectedRows);
+  const { generateIds, cancelIds } = pickBatchIds(selectedRows);
   const globalBatchIds = pickBatchIds(scopedList);
 
-  const startBatch = (
-    mode: Exclude<BatchMode, null>,
-    target: ReviewTarget = null,
-  ) => {
+  const startBatch = (mode: "generate" | "cancel") => {
     setSelectedKeys([]);
     setBatchMode(mode);
-    setReviewTarget(mode === "review" ? target : null);
   };
 
   const exitBatch = () => {
     setSelectedKeys([]);
     setBatchMode(null);
-    setReviewTarget(null);
   };
 
   const runBatch = async (
@@ -463,10 +453,6 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>上传视频</Button>
-      </div>
-
       {/* 动作优先：默认先选动作，进入对应模式后才出现选择列。 */}
       <div
         style={{
@@ -499,46 +485,13 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
             >
               取消生成
             </Button>
-            <Dropdown
-              menu={{
-                items: [
-                  {
-                    key: "mark",
-                    label: `标记为已审核（${globalBatchIds.reviewableIds.length}）`,
-                    icon: <CheckCircleOutlined />,
-                    disabled: globalBatchIds.reviewableIds.length === 0,
-                    onClick: () => startBatch("review", "mark"),
-                  },
-                  {
-                    key: "unmark",
-                    label: `撤销已审核（${globalBatchIds.unreviewableIds.length}）`,
-                    icon: <UndoOutlined />,
-                    disabled: globalBatchIds.unreviewableIds.length === 0,
-                    onClick: () => startBatch("review", "revoke"),
-                  },
-                ],
-              }}
-            >
-              <Button
-                icon={<CheckCircleOutlined />}
-                disabled={
-                  globalBatchIds.reviewableIds.length + globalBatchIds.unreviewableIds.length === 0
-                }
-              >
-                审核状态 <DownOutlined />
-              </Button>
-            </Dropdown>
           </Space>
         ) : (
           <Space wrap>
             <Typography.Text>
               {batchMode === "generate"
                 ? "请选择要生成字幕的素材"
-                : batchMode === "cancel"
-                  ? "请选择要取消生成的素材"
-                  : reviewTarget === "mark"
-                    ? "请选择要标记已审核的字幕"
-                    : "请选择要撤销审核的字幕"}
+                : "请选择要取消生成的素材"}
             </Typography.Text>
             <Button onClick={exitBatch} disabled={batchBusy}>
               取消选择
@@ -567,38 +520,11 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
                 取消生成（{cancelIds.length}）
               </Button>
             )}
-            {batchMode === "review" && reviewTarget === "mark" && (
-              <Button
-                loading={batchBusy}
-                disabled={reviewableIds.length === 0}
-                onClick={() =>
-                  runBatch(
-                    "批量标记已审核",
-                    (ids) => adminMaterials.batchReview(ids, "reviewed"),
-                    reviewableIds,
-                  )
-                }
-              >
-                标记为已审核（{reviewableIds.length}）
-              </Button>
-            )}
-            {batchMode === "review" && reviewTarget === "revoke" && (
-              <Button
-                loading={batchBusy}
-                disabled={unreviewableIds.length === 0}
-                onClick={() =>
-                  runBatch(
-                    "批量撤销已审核",
-                    (ids) => adminMaterials.batchReview(ids, "unreviewed"),
-                    unreviewableIds,
-                  )
-                }
-              >
-                撤销已审核（{unreviewableIds.length}）
-              </Button>
-            )}
           </Space>
         )}
+        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
+          上传视频
+        </Button>
       </div>
 
       <Table
@@ -611,7 +537,7 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
         rowSelection={batchMode ? {
           selectedRowKeys: selectedKeys,
           onChange: (keys) => setSelectedKeys(keys.map(String)),
-          getCheckboxProps: (row) => ({ disabled: !canSelect(row, batchMode, reviewTarget) }),
+          getCheckboxProps: (row) => ({ disabled: !canSelect(row, batchMode, null) }),
           preserveSelectedRowKeys: true,
           columnWidth: 48,
         } : undefined}

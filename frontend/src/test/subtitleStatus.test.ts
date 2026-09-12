@@ -21,15 +21,16 @@ describe("字幕展示态派生（PRD v8 §5.5A.3 状态机）", () => {
     expect(deriveSubtitleState(row({ subtitle_status: "error" })).kind).toBe("error");
   });
 
-  it("ready 且已审核 → 已审核；未审核 → 未审核", () => {
-    expect(deriveSubtitleState(row({ subtitle_status: "ready", review_state: "reviewed" })).kind).toBe(
-      "reviewed",
+  it("ready 的主展示统一为已生成，校对状态只保留为次级 kind", () => {
+    expect(deriveSubtitleState(row({ subtitle_status: "ready", review_state: "reviewed" }))).toMatchObject(
+      { kind: "reviewed", label: "已生成" },
     );
-    expect(
-      deriveSubtitleState(row({ subtitle_status: "ready", review_state: "unreviewed" })).kind,
-    ).toBe("unreviewed");
-    // 缺省也按未审核处理：审核过的行后端一定会带 review_state，没有就是没审
-    expect(deriveSubtitleState(row({ subtitle_status: "ready" })).kind).toBe("unreviewed");
+    expect(deriveSubtitleState(row({ subtitle_status: "ready", review_state: "unreviewed" }))).toMatchObject(
+      { kind: "unreviewed", label: "已生成" },
+    );
+    expect(deriveSubtitleState(row({ subtitle_status: "ready" }))).toMatchObject(
+      { kind: "unreviewed", label: "已生成" },
+    );
   });
 
   it("还在排队时报排队位次，不报 0% 进度", () => {
@@ -116,8 +117,8 @@ describe("pickBatchIds（PRD v8 §5.5A.5 状态白名单）", () => {
     const r = pickBatchIds(rows);
     expect(r.generateIds).toEqual(["a", "b"]); // pending + error 才可生成
     expect(r.cancelIds).toEqual(["c"]); // 只有真实任务仍活跃的 generating 可取消
-    expect(r.reviewableIds).toEqual(["d"]); // ready 且未审核 → 可标记
-    expect(r.unreviewableIds).toEqual(["e"]); // ready 且已审核 → 可撤销
+    expect(r.reviewableIds).toEqual(["d"]); // ready 且未校对 → 可标记
+    expect(r.unreviewableIds).toEqual(["e"]); // ready 且已校对 → 可撤销
   });
 
   it("空选择返回四个空数组，批量按钮据此不渲染", () => {
@@ -130,7 +131,7 @@ describe("pickBatchIds（PRD v8 §5.5A.5 状态白名单）", () => {
     });
   });
 
-  it("已审核的行不会同时出现在「标记」桶里，避免后端 400", () => {
+  it("已校对的行不会同时出现在「标记」桶里，避免后端 400", () => {
     const r = pickBatchIds([rows[4]]);
     expect(r.reviewableIds).toEqual([]);
     expect(r.unreviewableIds).toEqual(["e"]);
@@ -198,8 +199,7 @@ describe("固定 7 展示态、选择规则与模型加载相位（v9 §5.5A.3 /
   });
 
   it("审核判定只有一把尺子：展示态与批量过滤不得打架", () => {
-    // review_state 缺失时：表格若显示"未审核"，批量就必须能把它算进「标记为已审核」，
-    // 否则会出现"界面说未审核、按钮数出 0 个可审核"的自相矛盾。
+    // review_state 缺失时按未校对兼容，旧批量接口仍应能把它算进可标记集合。
     const row = { subtitle_status: "ready", review_state: undefined };
     expect(deriveSubtitleState(row).kind).toBe("unreviewed");
     expect(pickBatchIds([{ ...row, course_id: "z" } as any]).reviewableIds).toEqual(["z"]);

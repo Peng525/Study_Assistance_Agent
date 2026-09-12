@@ -26,22 +26,19 @@ export default function CourseCard({ course }: { course: CourseCardData }) {
   return (
     <Card
       hoverable
-      style={{ width: 280 }}
+      className="course-card"
       cover={
         <div
+          className="course-card__cover"
           style={{
-            height: 140,
             background: "linear-gradient(135deg, #1677ff 0%, #4096ff 100%)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             color: "#fff",
-            fontSize: 28,
-            fontWeight: 700,
-            position: "relative",
           }}
         >
-          {course.title || course.course_id}
+          <span className="course-card__cover-title">{course.title || course.course_id}</span>
           {course.duration ? (
             <span
               style={{
@@ -61,8 +58,8 @@ export default function CourseCard({ course }: { course: CourseCardData }) {
       }
       onClick={() => navigate(`/course/${course.course_id}`)}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <strong>{course.title || course.course_id}</strong>
+      <div className="course-card__title-row">
+        <strong className="course-card__title">{course.title || course.course_id}</strong>
         <Badge status="success" text="Ready" />
       </div>
       <div style={{ marginTop: 8, color: "var(--text-secondary)", fontSize: 12 }}>

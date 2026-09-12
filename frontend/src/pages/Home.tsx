@@ -87,13 +87,11 @@ export default function Home() {
         {loading ? (
           <Skeleton active />
         ) : (
-          <Row gutter={[16, 16]}>
+          <div className="course-grid">
             {videoCourses.map((c) => (
-              <Col key={c.course_id}>
-                <CourseCard course={c} />
-              </Col>
+              <CourseCard key={c.course_id} course={c} />
             ))}
-          </Row>
+          </div>
         )}
 
         {/* 学习轨迹 */}

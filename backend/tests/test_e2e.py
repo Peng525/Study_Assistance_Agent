@@ -73,10 +73,18 @@ def test_full_main_chain(e2e):
     r = e2e.post("/api/auth/login", json={"username": "admin", "password": "123456"})
     assert r.status_code == 200
 
-    # 2. admin 上传视频 + 字幕 + 课件
+    # 2. admin 先创建专栏，再在专栏上下文中上传视频 + 字幕 + 课件
+    series_response = e2e.post(
+        "/api/admin/columns",
+        json={"name": "Demo"},
+        headers=_admin(),
+    )
+    assert series_response.status_code == 200
+    series_id = series_response.json()["id"]
+
     r = e2e.post(
         "/api/admin/materials/upload",
-        params={"course_id": "demo", "file_type": "video"},
+        params={"course_id": "demo", "file_type": "video", "series_id": series_id},
         files={"file": ("v.mp4", b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")},
         headers=_admin(),
     )

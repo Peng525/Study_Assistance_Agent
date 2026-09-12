@@ -53,7 +53,7 @@ interface Props {
   open: boolean;
   row: SubtitleDrawerRow | null;
   onClose: () => void;
-  /** 保存 / 审核后通知父级刷新列表 */
+  /** 保存 / 校对状态变更后通知父级刷新列表 */
   onSaved: () => void;
   onRegenerate: (courseId: string) => void;
   onReviewToggle: (row: SubtitleDrawerRow) => void;
@@ -178,7 +178,7 @@ export default function SubtitleDrawer({
     try {
       const d = await adminMaterials.putCues(courseId, cues, revision);
       setRevision(d?.revision || "");
-      message.success("已保存；字幕被修改，审核状态已重置为未审核");
+      message.success("已保存并标记为已校对");
       setMode("view");
       onSaved();
     } catch (e: any) {
@@ -322,7 +322,7 @@ export default function SubtitleDrawer({
             <Descriptions.Item label="状态">
               {ready ? (
                 <Tag color={reviewed ? "success" : "warning"}>
-                  {reviewed ? "已审核" : "未审核"}
+                  {reviewed ? "已校对" : "未校对"}
                 </Tag>
               ) : (
                 <Tag>{row.subtitle_status || "—"}</Tag>
@@ -359,14 +359,14 @@ export default function SubtitleDrawer({
             <Space wrap style={{ marginBottom: 16 }}>
               {reviewed ? (
                 <Popconfirm
-                  title="撤销审核后，该字幕将不再自动用于问答，确定撤销？"
+                  title="确定撤销已校对标记？字幕仍可用于播放和 AI 问答。"
                   onConfirm={() => onReviewToggle(row)}
                 >
-                  <Button icon={<CheckCircleOutlined />}>撤销审核</Button>
+                  <Button icon={<CheckCircleOutlined />}>撤销校对</Button>
                 </Popconfirm>
               ) : (
                 <Button icon={<CheckCircleOutlined />} onClick={() => onReviewToggle(row)}>
-                  标记已审核
+                  标记已校对
                 </Button>
               )}
               <Button icon={<ReloadOutlined />} onClick={() => onRegenerate(row.course_id)}>
@@ -435,7 +435,7 @@ export default function SubtitleDrawer({
                 type="secondary"
                 style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
               >
-                保存后会自动复位为「未审核」，需重新人工抽查。
+                保存成功后会标记为「已校对」。
               </Typography.Paragraph>
             </>
           )}

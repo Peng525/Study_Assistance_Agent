@@ -10,7 +10,7 @@ export interface Citation {
 /**
  * 引用卡片：展示当前这一轮 AI 提问所引用的字幕片段与时间区间。
  * 与「自动 ±180 秒 Transcript Context」是两回事——这里是用户**主动**选中的，
- * 未审核字幕也允许主动引用（仅不允许自动注入上下文）。
+ * 自动字幕无论是否人工校对都允许主动引用；可用性由 ready + 文件存在决定。
  */
 export default function CitationCard({
   citation,

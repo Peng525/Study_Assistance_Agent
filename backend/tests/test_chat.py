@@ -15,7 +15,6 @@ from app.core.database import get_db
 from app.core.security import create_access_token, encrypt_api_key, hash_password
 from app.models.models import (
     ChatMessage,
-    ChatContextBinding,
     ChatSession,
     ColumnChatSession,
     ContentSeries,
@@ -301,7 +300,9 @@ def test_unbound_session_binds_first_course_and_rejects_cross_course(client, db_
     assert rejected.status_code == 409
 
 
-def test_chat_uses_published_project_context_without_subtitle(client, db_session, monkeypatch):
+def test_chat_ignores_archived_project_context_and_uses_unreviewed_ready_subtitle(
+    client, db_session, monkeypatch, tmp_path
+):
     from app.api import chat
     from app.services.project_context import (
         bind_material,
@@ -310,11 +311,19 @@ def test_chat_uses_published_project_context_without_subtitle(client, db_session
         snapshot_chunks,
     )
 
+    subtitle_path = tmp_path / "spring-intro.vtt"
+    subtitle_path.write_text(
+        "WEBVTT\n\n00:01:10.000 --> 00:01:20.000\n字幕证据只属于当前课程。\n",
+        encoding="utf-8",
+    )
     material = Material(
         course_id="spring-intro",
         dir_path="materials/spring-intro",
         video_original_filename="Spring 介绍.mp4",
         status="ready",
+        subtitle_status="ready",
+        subtitle_path=str(subtitle_path),
+        review_state="unreviewed",
     )
     db_session.add(material)
     db_session.flush()
@@ -350,39 +359,6 @@ def test_chat_uses_published_project_context_without_subtitle(client, db_session
         yield "项目回答"
 
     monkeypatch.setattr(chat, "stream_chat", capture_stream)
-    original_get_default = chat.get_default_config
-    published_v2 = False
-
-    def publish_v2_between_context_and_session(db):
-        nonlocal published_v2
-        if not published_v2:
-            published_v2 = True
-            version.status = "superseded"
-            source_v2 = ProjectSource(
-                project_id=project.id,
-                original_filename="project-v2.md",
-                source_format="md",
-                file_path="project-v2.md",
-                text_cached="# 新版本\n项目改为云端部署。",
-                source_hash="b" * 64,
-                status="active",
-            )
-            db.add(source_v2)
-            db.flush()
-            version_v2 = ProjectContextVersion(
-                project_id=project.id,
-                version=2,
-                summary_text="项目采用云端部署。",
-                source_manifest_json=manifest_json([source, source_v2]),
-                status="published",
-            )
-            db.add(version_v2)
-            db.flush()
-            snapshot_chunks(db, version_v2, [source, source_v2])
-        return original_get_default(db)
-
-    # 在首轮 messages 已使用 v1 后发布 v2，验证持久 binding 不会重新追 latest。
-    monkeypatch.setattr(chat, "get_default_config", publish_v2_between_context_and_session)
     response = client.post(
         "/api/chat/stream",
         json={
@@ -395,18 +371,18 @@ def test_chat_uses_published_project_context_without_subtitle(client, db_session
     )
     assert response.status_code == 200
     prompt = "\n".join(message["content"] for message in captured)
-    assert "Aurora-17" in prompt
+    assert "Aurora-17" not in prompt
+    assert "项目采用云端部署" not in prompt
+    assert "字幕证据只属于当前课程" in prompt
     assert "当前播放位置：75.5 秒" in prompt
-    assert "不能据此推断声音或画面" in prompt
+    assert "ASR" in prompt
 
     sid = [event["session_id"] for event in _parse_sse(response) if "session_id" in event][0]
-    binding = db_session.query(ChatContextBinding).filter(ChatContextBinding.session_id == sid).one()
-    assert binding.context_version_id == version.id
     session = db_session.query(ChatSession).filter(ChatSession.session_id == sid).one()
     assistant = json.loads(session.messages_json)[-1]
-    assert assistant["context_meta"]["project_context_version"] == 1
+    assert "project_context_version" not in assistant["context_meta"]
     assert assistant["context_meta"]["start_time"] == 75.5
-    assert assistant["context_meta"]["subtitle_context"] is False
+    assert assistant["context_meta"]["subtitle_context"] is True
 
 
 def test_column_context_is_same_for_theory_and_practice(client, db_session, monkeypatch):

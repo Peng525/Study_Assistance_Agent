@@ -11,10 +11,7 @@ A2 新增 `cues_to_vtt` / `cue_revision`。序列化与业务校验分层：
 import hashlib
 import re
 
-from app.models.models import (
-    SUBTITLE_REVIEW_REVIEWED,
-    SUBTITLE_STATUS_READY,
-)
+from app.models.models import SUBTITLE_STATUS_READY
 
 # 需要清洗的 WebVTT 内联样式标签
 _STYLE_TAG_RE = re.compile(r"</?(c|i|b|u|ruby|rt|v|lang)[^>]*>", re.IGNORECASE)
@@ -172,19 +169,6 @@ def validate_cues(cues: list) -> str | None:
     return None
 
 
-def transcript_context_allowed(subtitle_status: str | None, review_state: str | None) -> bool:
-    """是否允许把字幕**自动**注入为 Transcript Context（±180 秒时间窗）。
-
-    三件事必须分开判断，不要混成一个状态：
-        subtitle_status  字幕**有没有生成好**（pending/generating/ready/error）
-        review_state     字幕**能不能作为自动 AI 证据**（unreviewed/reviewed）
-        CC 开关（前端）  用户屏幕上看不看得到
-
-    门控规则：只有 ready + reviewed 才解锁自动注入。
-
-    ⚠️ 措辞纪律：不要说「生成即生效」。生成完成的准确含义是
-       「允许展示（CC 可见）+ 允许被用户主动引用（Selected Evidence）」，
-       **未审核前不得自动作为 Transcript Context** —— 未校对的转写混进
-       上下文会直接污染答案，而这是本项目最核心的卖点。
-    """
-    return subtitle_status == SUBTITLE_STATUS_READY and review_state == SUBTITLE_REVIEW_REVIEWED
+def transcript_context_allowed(subtitle_status: str | None, subtitle_has_file: bool) -> bool:
+    """字幕生成完成且文件真实存在时即可作为 Transcript Context。"""
+    return subtitle_status == SUBTITLE_STATUS_READY and subtitle_has_file

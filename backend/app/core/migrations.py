@@ -246,10 +246,9 @@ def run_migrations(engine: Engine) -> list[str]:
     """执行全部幂等迁移，返回本次实际执行的迁移名（便于启动日志观察）。"""
     applied: list[str] = []
 
-    # A3（2026-09-04）：字幕审核状态。
-    # 与 subtitle_status 分工：subtitle_status = 字幕**有没有生成好**（pending/generating/ready/error）
-    #                        review_state   = 字幕**能不能作为自动 AI 证据**（unreviewed/reviewed）
-    # 两者正交：生成完成（ready）不等于审核通过（reviewed）。
+    # A3（2026-09-04）：字幕人工校对状态（历史列名继续兼容）。
+    # subtitle_status 表示生成生命周期；review_state 仅表示是否经过人工校对。
+    # AI Evidence 准入由 ready + 字幕文件存在决定，与 review_state 无关。
     if _add_column_if_missing(
         engine,
         "materials",

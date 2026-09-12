@@ -12,7 +12,6 @@ import AdminDashboard from "./pages/admin/Dashboard";
 import AdminModelConfigs from "./pages/admin/ModelConfigs";
 import AdminUsers from "./pages/admin/Users";
 import AdminProjectContext from "./pages/admin/ProjectContext";
-import AdminProjectBackground from "./pages/admin/ProjectBackground";
 import AdminVideoKnowledge from "./pages/admin/VideoKnowledge";
 import AdminLLMCallLogs from "./pages/admin/LLMCallLogs";
 import AdminRedirectIfNeeded from "./components/AdminRedirectIfNeeded";
@@ -103,7 +102,7 @@ export default function App() {
           <Route index element={<AdminDashboard />} />
           <Route path="model-configs" element={<AdminModelConfigs />} />
           <Route path="materials" element={<Navigate to="/admin/columns" replace />} />
-          <Route path="project-context" element={<AdminProjectBackground />} />
+          <Route path="project-context" element={<Navigate to="/admin/columns" replace />} />
           <Route path="columns/courseware" element={<Navigate to="/admin/columns" replace />} />
           <Route path="columns" element={<AdminProjectContext />} />
           <Route path="columns/:seriesId" element={<AdminProjectContext />} />

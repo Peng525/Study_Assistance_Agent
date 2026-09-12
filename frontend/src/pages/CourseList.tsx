@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Col, Empty, Input, Row, Skeleton } from "antd";
+import { Empty, Input, Skeleton } from "antd";
 import { useSearchParams } from "react-router-dom";
 import TopNav from "../components/TopNav";
 import CourseCard, { CourseCardData } from "../components/CourseCard";
@@ -50,13 +50,11 @@ export default function CourseList() {
         ) : filtered.length === 0 ? (
           <Empty description="暂无匹配课程" />
         ) : (
-          <Row gutter={[16, 16]}>
+          <div className="course-grid">
             {filtered.map((c) => (
-              <Col key={c.course_id}>
-                <CourseCard course={c} />
-              </Col>
+              <CourseCard key={c.course_id} course={c} />
             ))}
-          </Row>
+          </div>
         )}
       </div>
     </div>

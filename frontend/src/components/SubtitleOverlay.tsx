@@ -72,25 +72,6 @@ export default function SubtitleOverlay({
       className="subtitle-overlay"
       data-start={currentCue?.start}
       data-end={currentCue?.end}
-      style={{
-        position: "absolute",
-        bottom: 48,
-        left: "50%",
-        transform: "translateX(-50%)",
-        maxWidth: "80%",
-        padding: "6px 14px",
-        borderRadius: 6,
-        background: "var(--subtitle-bg)",
-        color: "var(--subtitle-text)",
-        fontSize: 18,
-        lineHeight: 1.5,
-        textAlign: "center",
-        pointerEvents: "auto",
-        userSelect: "text",
-        cursor: "text",
-        zIndex: 10,
-        whiteSpace: "pre-wrap",
-      }}
     >
       {currentCue.text}
     </div>

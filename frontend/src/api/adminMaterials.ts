@@ -62,7 +62,7 @@ export const adminMaterials = {
   deleteFile: (id: string, fileType: string) =>
     api.delete(`/admin/materials/${enc(id)}/files/${fileType}`).then((r) => r.data),
 
-  // ---- 字幕：生成 / 取消 / 审核（单条）----
+  // ---- 字幕：生成 / 取消 / 校对状态（单条）----
   generateSubtitle: (id: string) =>
     api.post(`/admin/materials/${enc(id)}/generate-subtitle`).then((r) => r.data),
   cancelSubtitle: (id: string) =>

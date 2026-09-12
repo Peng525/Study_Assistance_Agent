@@ -101,7 +101,7 @@ def test_batch_generate_all_succeeded(client, db_session):
     for course_id in ("c1", "c2"):
         material = db_session.query(Material).filter_by(course_id=course_id).one()
         assert material.subtitle_status == "generating"
-        assert material.subtitle_source == "whisper"
+        assert material.subtitle_source is None, "入队尚未生成新字幕，不应提前声明来源"
         assert material.subtitle_error is None
 
 
@@ -300,7 +300,7 @@ def test_batch_review_succeeded(client, db_session):
 
 
 def test_batch_review_skips_non_ready(client, db_session):
-    """未生成完成的字幕没有审核意义（PRD：不得"生成即生效"）。"""
+    """未生成完成的字幕不能标记校对状态。"""
     _mk(db_session, "c1", subtitle_status="ready", review_state="unreviewed")
     _mk(db_session, "c2", subtitle_status="error")
 
@@ -315,7 +315,7 @@ def test_batch_review_skips_non_ready(client, db_session):
 
     rows = _by_id(body["results"])
     assert rows["c1"]["ok"] is True
-    assert "无法审核" in rows["c2"]["error"]
+    assert "无法修改校对状态" in rows["c2"]["error"]
     assert db_session.query(Material).filter_by(course_id="c2").one().review_state == "unreviewed"
 
 
@@ -365,7 +365,7 @@ def test_single_generate_writes_generating_not_pending(client, db_session):
     assert resp.status_code == 200
     material = db_session.query(Material).filter_by(course_id="c1").one()
     assert material.subtitle_status == "generating"
-    assert material.subtitle_source == "whisper"
+    assert material.subtitle_source is None, "入队尚未生成新字幕，不应提前声明来源"
 
 
 def test_single_generate_after_error_clears_subtitle_error(client, db_session):
@@ -426,7 +426,7 @@ def test_cancel_while_queued_converges_db_to_pending(client, db_session):
     断言 `pending` 而不是 `error`：取消是"这次没生成、随时可以再来"，
     不是"这个素材生成不了"。写 `error` 会让管理员误判素材有问题（PRD §5.5A.3）。
     """
-    _mk(db_session, "c1")
+    _mk(db_session, "c1", review_state="reviewed", subtitle_source="manual")
     # fixture 把 _start_worker mock 成 no-op，任务入队后停在"排队中"
     client.post("/api/admin/materials/c1/generate-subtitle", headers=_h())
     db_session.expire_all()
@@ -439,6 +439,8 @@ def test_cancel_while_queued_converges_db_to_pending(client, db_session):
     m = db_session.query(Material).filter_by(course_id="c1").one()
     assert m.subtitle_status == "pending", "排队中取消必须由请求方自己收尾，不能停在 generating"
     assert m.subtitle_error is None, "取消不是失败，不留失败文案"
+    assert m.review_state == "reviewed", "排队中取消没有产生新字幕，不应冲掉原校对状态"
+    assert m.subtitle_source == "manual", "排队中取消没有产生新字幕，不应改写旧字幕来源"
     # runtime 必须一并清掉：留着会让 active_task_count() 虚高，
     # 且列表端点的 subtitle_task_active 会把这行显示成仍可取消（鬼影入口）
     assert whisper_service.peek_status("c1") is None
@@ -451,7 +453,7 @@ def test_cancel_generating_writes_pending_not_failed(client, db_session, monkeyp
     端到端跑真实 worker loop 与真实 `_write_back_to_db`，只 mock 转写这一步 ——
     避免测试断言的只是"函数被调用了"而不是"DB 真的变了"。
     """
-    _mk(db_session, "c1")
+    _mk(db_session, "c1", review_state="reviewed", subtitle_source="manual")
     client.post("/api/admin/materials/c1/generate-subtitle", headers=_h())
 
     def raise_cancelled(*_a, **_kw):
@@ -467,6 +469,8 @@ def test_cancel_generating_writes_pending_not_failed(client, db_session, monkeyp
     m = db_session.query(Material).filter_by(course_id="c1").one()
     assert m.subtitle_status == "pending", "取消后回到待生成，不是 error"
     assert m.subtitle_error is None, "取消不是失败，不留失败文案（也不留「已取消」标记）"
+    assert m.review_state == "reviewed", "生成中取消没有写回新字幕，不应冲掉原校对状态"
+    assert m.subtitle_source == "manual", "生成中取消没有写回新字幕，不应改写旧字幕来源"
     assert "c1" not in whisper_service._cancel_requested, (
         "收尾必须清掉取消标记，否则同一个素材的下一次任务一开始就『被取消』"
     )
@@ -478,7 +482,7 @@ def test_real_failure_is_not_treated_as_cancel(client, db_session, monkeypatch):
     管理员必须能区分「跑挂了」（有失败详情可查、值得重试）和「我自己停的」。
     取消回 pending、失败回 error —— 这两条路径的唯一区别就在这里。
     """
-    _mk(db_session, "c1")
+    _mk(db_session, "c1", review_state="reviewed", subtitle_source="manual")
     client.post("/api/admin/materials/c1/generate-subtitle", headers=_h())
 
     def boom(*_a, **_kw):
@@ -492,19 +496,19 @@ def test_real_failure_is_not_treated_as_cancel(client, db_session, monkeypatch):
     m = db_session.query(Material).filter_by(course_id="c1").one()
     assert m.subtitle_status == "error", "真失败不能回到 pending（那会让管理员以为只是没生成）"
     assert "boom" in (m.subtitle_error or "")
+    assert m.review_state == "reviewed", "生成失败没有替换字幕内容，不应冲掉原校对状态"
+    assert m.subtitle_source == "manual", "生成失败没有替换字幕内容，不应改写旧字幕来源"
 
 
-def test_regenerate_resets_review_state(client, db_session):
-    """重新生成必须把审核结论复位为 unreviewed（PRD §5.5A.3 / AC-18）。
-
-    新生成的机器转写若顶着上一版的「已审核」，会直接获得自动作为 Transcript Context
-    的资格 —— 未校对的转写混进上下文会污染答案，这是本项目最核心的卖点。
-
-    （用 `error` 而非 `ready` 构造：`GENERATABLE = ("pending", "error")`，ready 行当前
-    不可直接重新生成 —— 那是既有约束，不在本轮改动范围。审核复位与"从哪个状态生成"
-    无关，用 error 同样能锁住这条行为。）
-    """
-    _mk(db_session, "c1", subtitle_status="error", review_state="reviewed")
+def test_regenerate_resets_review_state_only_after_success(client, db_session, monkeypatch):
+    """入队保留旧校对状态；新字幕成功写回后才标为 unreviewed。"""
+    _mk(
+        db_session,
+        "c1",
+        subtitle_status="error",
+        review_state="reviewed",
+        subtitle_source="manual",
+    )
 
     resp = client.post(
         "/api/admin/materials/batch/generate-subtitle",
@@ -517,14 +521,25 @@ def test_regenerate_resets_review_state(client, db_session):
     db_session.expire_all()
     m = db_session.query(Material).filter_by(course_id="c1").one()
     assert m.subtitle_status == "generating"
-    assert m.review_state == "unreviewed", "重新生成后旧审核结论必须作废"
+    assert m.review_state == "reviewed", "任务尚未成功，不应提前冲掉旧校对状态"
+    assert m.subtitle_source == "manual", "任务尚未成功，不应提前改写旧字幕来源"
+
+    monkeypatch.setattr(whisper_service, "_run_whisper", lambda *_a, **_kw: "generated.vtt")
+    monkeypatch.setattr(whisper_service, "SessionLocal", lambda: db_session)
+    whisper_service._worker_loop()
+
+    db_session.expire_all()
+    m = db_session.query(Material).filter_by(course_id="c1").one()
+    assert m.subtitle_status == "ready"
+    assert m.review_state == "unreviewed", "成功生成的新字幕必须重新进入未校对状态"
+    assert m.subtitle_source == "whisper", "成功生成的新字幕必须标记为 AI 自动转写来源"
 
 
 def test_rescan_keeps_whisper_source(db_session, isolated_materials_root):
     """重新扫描后，Whisper 生成的 `*.whisper.vtt` 仍标为 whisper（AC-14）。
 
     原实现无条件写 manual —— 一次重新扫描就把全部机器生成字幕改标成"人工上传"，
-    管理员会以为人已校过而跳过抽查，未校对的转写混入上下文会直接污染答案。
+    会让管理员误判字幕来源并跳过必要的质量抽查。
     """
     from app.api.admin_materials import _rescan_material
 
@@ -727,18 +742,8 @@ def _write_vtt(path, text):
     )
 
 
-def test_rescan_resets_review_when_subtitle_replaced(db_session, isolated_materials_root):
-    """D2：字幕被换成另一个文件 → 复位审核结论（PRD §5.5A.7）。
-
-    旧审核结论指向的是旧内容，继续沿用会让未校对的机器转写顶着「已审核」
-    进入 Transcript Context。
-
-    ⚠️ 这里构造的是"换了一个文件"，而**不是**"用新内容覆盖同名文件"：
-    指纹是实时读文件算的，同名覆盖时扫描读到的就已经是新内容，
-    prev 与 new 必然相等 —— 那个场景扫不出来（代码注释里已诚实标注），
-    靠 `PUT /subtitle/cues` 的编辑保存路径兜底。
-    **测试必须反映真实的判定边界，不能假装覆盖到了。**
-    """
+def test_rescan_does_not_infer_calibration_when_subtitle_replaced(db_session, isolated_materials_root):
+    """Rescan 只同步磁盘事实，不推断字幕是否经过人工校对。"""
     from app.api.admin_materials import _rescan_material
 
     old_vtt = isolated_materials_root / "c1" / "subtitle_old.vtt"
@@ -757,16 +762,11 @@ def test_rescan_resets_review_when_subtitle_replaced(db_session, isolated_materi
     db_session.expire_all()
     m = db_session.query(Material).filter_by(course_id="c1").one()
     assert m.subtitle_status == "ready"
-    assert m.review_state == "unreviewed", "字幕被换掉了，旧审核结论必须作废"
+    assert m.review_state == "reviewed"
 
 
 def test_rescan_keeps_review_when_content_unchanged(db_session, isolated_materials_root):
-    """D2 反向：只是扫了一下、字幕一字未改 → 审核结论**必须保留**。
-
-    用内容指纹而不是 mtime 就是为了避免这里误伤：
-    文件被复制 / 恢复 / 打包解包时 mtime 会无意义地变化，
-    管理员"只是点了一下重新扫描"不该丢掉全部审核结论。
-    """
+    """Rescan 不拥有校对生命周期，扫描本身必须保留人工校对状态。"""
     from app.api.admin_materials import _rescan_material
 
     vtt = isolated_materials_root / "c1" / "v.whisper.vtt"
@@ -779,12 +779,12 @@ def test_rescan_keeps_review_when_content_unchanged(db_session, isolated_materia
 
     db_session.expire_all()
     m = db_session.query(Material).filter_by(course_id="c1").one()
-    assert m.review_state == "reviewed", "内容没变，不该冲掉审核结论"
+    assert m.review_state == "reviewed", "重新扫描不应冲掉人工校对状态"
     assert m.scanned_at is not None, "扫描时间仍然要更新（它记录的是扫描行为，不是内容变化）"
 
 
-def test_rescan_resets_review_when_subtitle_removed(db_session, isolated_materials_root):
-    """字幕文件没了 → 旧的审核结论无从谈起，必须复位。"""
+def test_rescan_does_not_change_calibration_when_subtitle_removed(db_session, isolated_materials_root):
+    """字幕文件缺失会改变生成状态，但 rescan 不拥有校对生命周期。"""
     from app.api.admin_materials import _rescan_material
 
     vtt = isolated_materials_root / "c1" / "v.whisper.vtt"
@@ -801,7 +801,7 @@ def test_rescan_resets_review_when_subtitle_removed(db_session, isolated_materia
     # B.1 后 rescan 不再自动 enqueue：ready + 文件缺失沿用既定边界落 pending，
     # 不会是 generating（生成必须由 admin 手动点）。
     assert m.subtitle_status == "pending"
-    assert m.review_state == "unreviewed"
+    assert m.review_state == "reviewed"
 
 
 # ---------- v9 S1 · B.1：rescan 不再插手字幕任务生命周期 ----------

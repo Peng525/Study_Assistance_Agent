@@ -137,18 +137,18 @@ def test_subtitle_status_response_includes_review_state(client, db_session):
 
 
 @pytest.mark.parametrize(
-    "status,review,expect",
+    "status,has_file,expect",
     [
-        ("ready", "reviewed", True),      # 生成完成 + 已审核 → 自动注入
-        ("ready", "unreviewed", False),    # 生成完成 + 未审核 → 仅可展示/主动引用
-        ("pending", "reviewed", False),    # 没生成好，审核态无意义
-        ("generating", "reviewed", False),
-        ("error", "unreviewed", False),
-        (None, "reviewed", False),
+        ("ready", True, True),
+        ("ready", False, False),
+        ("pending", True, False),
+        ("generating", True, False),
+        ("error", True, False),
+        (None, True, False),
     ],
 )
-def test_transcript_permission_matrix(status, review, expect):
-    assert transcript_context_allowed(status, review) is expect
+def test_transcript_permission_matrix(status, has_file, expect):
+    assert transcript_context_allowed(status, has_file) is expect
 
 
 def test_generate_status_endpoint_does_not_change_review_state(client, db_session, monkeypatch):

@@ -45,10 +45,7 @@ export interface SubtitleRuntimeFields {
   subtitle_queue_position?: number;
 }
 
-/** 审核判定全项目唯一的一把尺子（PRD §5.5A.3）。
-
-展示态派生与批量 ID 过滤**必须**用同一个判定 —— 否则会出现
-"表格显示未审核，但批量按钮数出 0 个可审核"这种自相矛盾的界面。 */
+/** 人工校对状态判定；它只表达质量，不控制播放器或 AI Evidence 准入。 */
 export function isReviewed(row: SubtitleRuntimeFields): boolean {
   return row.review_state === "reviewed";
 }
@@ -62,8 +59,8 @@ export function deriveSubtitleState(row: SubtitleRuntimeFields): SubtitleViewSta
 
   if (s === "ready") {
     return isReviewed(row)
-      ? { kind: "reviewed", label: "已审核" }
-      : { kind: "unreviewed", label: "未审核" };
+      ? { kind: "reviewed", label: "已生成" }
+      : { kind: "unreviewed", label: "已生成" };
   }
 
   if (s === "generating") {

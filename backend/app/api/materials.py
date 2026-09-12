@@ -196,7 +196,11 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
     is_admin = current.role == "admin"
     query = db.query(Material)
     if current.role != "admin":
-        query = query.filter(Material.status == "ready")  # user 只看 ready
+        # 学习端只展示已经归入专栏的课程；待归类素材没有完整 AI Context 边界。
+        query = query.join(VideoKnowledge, VideoKnowledge.material_id == Material.id).filter(
+            Material.status == "ready",
+            VideoKnowledge.series_id.is_not(None),
+        )
     materials = query.order_by(Material.id).all()
     # D3：必须在任何派生之前自愈，否则下面算出的 subtitle_status / subtitle_task_active
     # 会基于一个已经不一致的旧值，前端就会看到「假 generating」并空轮询。
@@ -248,8 +252,7 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
             # D3/cancel：runtime 是否真有任务。前端用它过滤「可取消的行」。
             "subtitle_task_active": whisper_service.task_is_active(m.course_id),
             **_peek_runtime(m.course_id, m.subtitle_status),
-            # A3：字幕审核状态（unreviewed/reviewed）。与 subtitle_status 正交，
-            # 仅 ready+reviewed 才解锁自动 Transcript Context 注入。
+            # 字幕校对状态（unreviewed/reviewed），仅作质量标记。
             "review_state": m.review_state,
             "title": _extract_title(m.courseware_text_cached),
             "duration": _extract_duration(m.subtitle_path),
@@ -279,17 +282,19 @@ def get_material(course_id: str, current: User = Depends(get_current_user), db: 
         raise HTTPException(status_code=404, detail="课程不存在")
     if material.status != "ready" and current.role != "admin":
         raise HTTPException(status_code=404, detail="课程不可用")
+    knowledge = db.query(VideoKnowledge).filter(VideoKnowledge.material_id == material.id).first()
     return {
         "course_id": material.course_id,
         "status": material.status,
         "courseware_format": material.courseware_format,
         "subtitle_status": material.subtitle_status,
         "review_state": material.review_state,
-        "course_type": (
-            db.query(VideoKnowledge.course_type)
-            .filter(VideoKnowledge.material_id == material.id)
-            .scalar()
-        ),
+        "course_type": knowledge.course_type if knowledge else None,
+        "series_id": knowledge.series_id if knowledge else None,
+        "page_start": knowledge.page_start if knowledge else None,
+        "page_end": knowledge.page_end if knowledge else None,
+        "knowledge_text": knowledge.knowledge_text_cached if knowledge else "",
+        "video_name": material.video_original_filename or material.course_id,
     }
 
 

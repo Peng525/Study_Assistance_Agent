@@ -145,10 +145,10 @@ describe("字幕详情 Drawer（PRD v8 §5.5A.6）", () => {
     expect(adminMaterials.getCues).not.toHaveBeenCalled();
   });
 
-  it("已审核的行显示「撤销审核」，未审核显示「标记已审核」", async () => {
+  it("已校对的行显示「撤销校对」，未校对显示「标记已校对」", async () => {
     const reviewed = renderDrawer({ review_state: "reviewed" });
     await screen.findByText("第一条字幕");
-    fireEvent.click(screen.getByRole("button", { name: /撤销审核/ }));
+    fireEvent.click(screen.getByRole("button", { name: /撤销校对/ }));
     expect(reviewed.onReviewToggle).not.toHaveBeenCalled();
     const confirm = await waitFor(() => {
       const node = document.querySelector<HTMLButtonElement>(

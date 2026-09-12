@@ -2,7 +2,7 @@
 
 覆盖：
 - GET 返回 cues + revision 乐观锁指纹
-- PUT 成功：写回 VTT、编辑使旧审核失效（review_state→unreviewed）、返回新 revision
+- PUT 成功：写回 VTT、标记人工校对完成（review_state→reviewed）、返回新 revision
 - PUT 乐观锁冲突（revision 不匹配）→ 409
 - PUT 非法时间轴 → 400
 - PUT 字幕文件缺失 → 400
@@ -78,12 +78,12 @@ def test_save_subtitle_cues_success_resets_review(client, db_session, tmp_path):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["review_state"] == "unreviewed"  # 编辑使旧审核失效
+    assert body["review_state"] == "reviewed"
     content = (tmp_path / "c1.whisper.vtt").read_text(encoding="utf-8")
     assert "你好改" in content
     assert body["revision"] == cue_revision(content)
     db_session.expire_all()
-    assert db_session.query(Material).filter(Material.course_id == "c1").one().review_state == "unreviewed"
+    assert db_session.query(Material).filter(Material.course_id == "c1").one().review_state == "reviewed"
 
 
 def test_save_subtitle_cues_revision_conflict_409(client, db_session, tmp_path):

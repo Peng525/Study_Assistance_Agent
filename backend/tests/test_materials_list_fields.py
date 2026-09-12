@@ -15,8 +15,9 @@ from fastapi.testclient import TestClient
 from app.api.materials import router as materials_router
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password
-from app.models.models import Material, User
+from app.models.models import ContentSeries, Material, User, VideoKnowledge
 from app.services import storage, whisper_service
+from app.services.project_context import ensure_default_project
 
 
 @pytest.fixture()
@@ -98,7 +99,13 @@ def test_user_cannot_see_subtitle_error(client, db_session, tmp_path):
     subtitle = course_dir / "v.whisper.vtt"
     subtitle.write_text("WEBVTT\n", encoding="utf-8")
 
-    _add(db_session, "c1", subtitle_path=str(subtitle), subtitle_error="/srv/secret leak")
+    material = _add(db_session, "c1", subtitle_path=str(subtitle), subtitle_error="/srv/secret leak")
+    project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.flush()
+    db_session.add(VideoKnowledge(material_id=material.id, series_id=series.id))
+    db_session.commit()
 
     row = _row(client.get("/api/materials", headers=_h("user", 2)).json(), "c1")
 

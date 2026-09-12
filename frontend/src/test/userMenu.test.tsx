@@ -34,6 +34,7 @@ describe("共享用户菜单", () => {
     expect(screen.getByText("dashboard")).toBeInTheDocument();
     expect(screen.getByText("专栏管理")).toBeInTheDocument();
     expect(screen.queryByText("素材管理")).toBeNull();
+    expect(screen.queryByText("项目背景")).toBeNull();
   });
 
   it("调用登出接口后清理本地状态并跳转登录页", async () => {

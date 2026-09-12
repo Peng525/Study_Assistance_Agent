@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Card, Drawer, Dropdown, Empty, Input, Modal, Select, Space, Spin, Table, Tabs, Tag, Typography, Upload, message } from "antd";
-import { DeleteOutlined, EditOutlined, MoreOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, MoreOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useNavigate, useParams } from "react-router-dom";
@@ -167,7 +167,7 @@ export default function ProjectContext() {
       setOutlineEditing(true);
       setOutlineOpen(true);
       await load();
-      message.success("总大纲草稿已生成，请审核后启用");
+      message.success("总大纲草稿已生成，请校对内容后保存启用");
     } catch (error: any) {
       message.error(error.response?.data?.detail || "总大纲生成失败");
     } finally { setBusy(false); }
@@ -275,9 +275,12 @@ export default function ProjectContext() {
     </Card>
   </Space>;
 
-  return <Space direction="vertical" size={16} style={{ width: "100%" }}>
-    <Button type="link" style={{ padding: 0, width: "fit-content" }} onClick={() => navigate("/admin/columns")}>← 返回专栏列表</Button>
-    <div><Typography.Title level={3} style={{ margin: 0 }}>{current.name}</Typography.Title><Typography.Text type="secondary">课件、视频和字幕都在当前专栏内管理</Typography.Text></div>
+  return <Space direction="vertical" size={20} style={{ width: "100%" }}>
+    <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/admin/columns")}>返回专栏列表</Button>
+    <div className="admin-series-heading">
+      <Typography.Title level={3}>{current.name}</Typography.Title>
+      <Typography.Text type="secondary">课件、视频和字幕都在当前专栏内管理</Typography.Text>
+    </div>
     <Tabs type="card" className="admin-card-tabs" items={[
       { key: "courseware", label: "课件", children: courseware },
       { key: "videos", label: `视频（${current.video_count}）`, children: <Materials seriesId={current.id} onConfigureKnowledge={(courseId) => navigate(`/admin/columns/${current.id}/videos/${encodeURIComponent(courseId)}`)} /> },

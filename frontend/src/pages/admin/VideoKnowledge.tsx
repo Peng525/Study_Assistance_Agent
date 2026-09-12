@@ -22,9 +22,12 @@ export default function VideoKnowledge() {
   const load = async () => {
     setLoading(true);
     try {
-      const [columns, context] = await Promise.all([api.get<Series[]>("/admin/columns"), api.get("/admin/project-context")]);
+      const [columns, material] = await Promise.all([
+        api.get<Series[]>("/admin/columns"),
+        api.get<Video>(`/materials/${encodeURIComponent(decodedCourseId)}`),
+      ]);
       const nextSeries = columns.data.find((item) => item.id === id) || null;
-      const nextVideo = (context.data.videos || []).find((item: Video) => item.course_id === decodedCourseId && item.series_id === id) || null;
+      const nextVideo = material.data.series_id === id ? material.data : null;
       setSeries(nextSeries); setVideo(nextVideo); setStart(nextVideo?.page_start || null); setEnd(nextVideo?.page_end || null);
       if (nextSeries?.source) setPages((await api.get(`/admin/project-context/sources/${nextSeries.source.id}/pages`)).data.pages || []);
       else setPages([]);

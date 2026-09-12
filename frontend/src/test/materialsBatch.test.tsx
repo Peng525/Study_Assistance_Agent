@@ -88,66 +88,17 @@ describe("动作优先批量操作（PRD AC-7 / AC-19）", () => {
     await waitFor(() => expect(box).toBeChecked());
   };
 
-  /** 展开「审核状态」下拉，返回两个菜单项 DOM。 */
-  const openReviewMenu = async () => {
-    // antd Dropdown 默认 trigger 是 hover，点 click 打不开
-    const btn = await screen.findByRole("button", { name: /审核状态/ });
-    fireEvent.mouseEnter(btn);
-    return waitFor(() => {
-      const items = document.querySelectorAll<HTMLElement>(".ant-dropdown-menu-item");
-      expect(items.length).toBe(2);
-      return items;
-    });
-  };
-
-  it("默认页常驻三个动作且不显示选择列", async () => {
+  it("默认页只保留生成、取消和同排上传，且不显示选择列", async () => {
     render(<Materials seriesId={1} />);
     await screen.findByText("c-reviewed");
 
     expect(screen.getByRole("button", { name: /生成字幕$/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /取消生成$/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /审核状态/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /上传视频/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /审核状态/ })).toBeNull();
     expect(document.querySelectorAll('.ant-table-thead input[type="checkbox"]')).toHaveLength(0);
   });
 
-  it("审核入口按全表分别显示标记和撤销数量", async () => {
-    render(<Materials seriesId={1} />);
-    await screen.findByText("c-reviewed");
-
-    const items = await openReviewMenu();
-    expect(items[0].textContent).toContain("标记为已审核（1）");
-    expect(items[0].className).not.toContain("ant-dropdown-menu-item-disabled");
-    expect(items[1].textContent).toContain("撤销已审核（1）");
-    expect(items[1].className).not.toContain("ant-dropdown-menu-item-disabled");
-  });
-
-  it("标记审核模式只允许未审核行，且只显示当前主操作", async () => {
-    render(<Materials seriesId={1} />);
-    await screen.findByText("c-reviewed");
-    const items = await openReviewMenu();
-    fireEvent.click(items[0]);
-    const reviewedRow = screen.getByText("c-reviewed").closest("tr");
-    expect(reviewedRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')).toBeDisabled();
-    await selectRow("c-ready");
-
-    expect(screen.getByText("请选择要标记已审核的字幕")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /标记为已审核（1）/ })).not.toBeDisabled();
-    expect(screen.queryByRole("button", { name: /撤销已审核/ })).toBeNull();
-  });
-
-  it("撤销审核模式只允许已审核行，且只显示当前主操作", async () => {
-    render(<Materials seriesId={1} />);
-    await screen.findByText("c-reviewed");
-    const items = await openReviewMenu();
-    fireEvent.click(items[1]);
-    const unreviewedRow = screen.getByText("c-ready").closest("tr");
-    expect(unreviewedRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')).toBeDisabled();
-    await selectRow("c-reviewed");
-
-    expect(screen.getByText("请选择要撤销审核的字幕")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /撤销已审核（1）/ })).not.toBeDisabled();
-    expect(screen.queryByRole("button", { name: /标记为已审核/ })).toBeNull();
-  });
 });
 
 describe("专栏视频批量操作（PRD v8 §5.5A.5）", () => {

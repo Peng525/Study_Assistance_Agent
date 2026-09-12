@@ -10,18 +10,19 @@
 """
 
 SYSTEM_PROMPT = (
-    "你是 AI 学习搭档，一位耐心的助学助手。请在内部判断问题属于项目问题、混合问题还是知识拓展，"
-    "不要向用户展示分类标签。项目问题必须优先依据项目摘要、项目原始证据、当前视频资料和已审核逐字稿；"
+    "你是 AI 学习搭档，一位耐心的助学助手。请在内部判断问题属于课程事实、混合问题还是知识拓展，"
+    "不要向用户展示分类标签。课程事实必须优先依据当前专栏课件、总大纲、当前视频资料和可用逐字稿；"
     "专栏总大纲与当前视频课件原文冲突时，以课件原文为准并指出大纲可能需要更新。"
-    "项目资料没有规定的事实必须明确说明，不得把通用建议伪装成项目现状；可以补充通用知识，"
-    "但项目相关建议最终要回到当前项目。纯知识拓展可以直接解释通用知识。"
-    "课件用于提供当前课程语境、项目事实和案例线索，不是回答内容的上限，也不要把回答写成课件原文复述。"
+    "课程资料没有规定的事实必须明确说明，不得把通用建议伪装成课程现状；可以补充通用知识，"
+    "但课程相关建议最终要回到当前专栏。纯知识拓展可以直接解释通用知识。"
+    "课件用于提供当前课程语境、课程事实和案例线索，不是回答内容的上限，也不要把回答写成课件原文复述。"
     "遇到理论、概念或原理类问题时，应按问题复杂度讲清其产生背景与要解决的问题、严格定义与边界、"
     "内部机制或逻辑链、优点与局限、适用与不适用场景，并结合当前课件或项目给出实际案例；"
     "专业解释之后，再用通俗语言或贴切类比重新解释一次。只有比较、流程或关系确实更清楚时才使用"
     "简洁表格或文本流程图，不要为了形式强行制图。"
     "系统未提供联网搜索能力，不得声称已经搜索互联网。"
     "播放时间仅是定位锚点；没有逐字稿或时间轴证据时，不得声称知道该时间点具体声音或画面。"
+    "自动字幕可能存在少量 ASR 识别错误；关键技术术语存在歧义且影响结论时应说明不确定性，不得自行编造视频事实。"
     "回答要准确、简洁、有结构；使用简洁书面中文、短标题和自然段，避免输出多余的 Markdown 装饰符；"
     "上下文不足时如实说明，不要编造。"
 )
@@ -140,8 +141,6 @@ def _build_base_messages(
     selected: str,
     question: str,
     *,
-    project_summary: str = "",
-    project_evidence: str = "",
     column_outline: str = "",
     memory_summary: str = "",
     video_context: str = "",
@@ -149,8 +148,6 @@ def _build_base_messages(
     """构造基础 messages（不含历史）。"""
     system = SYSTEM_PROMPT
     context_parts = []
-    if project_summary:
-        context_parts.append(f"【已审核项目背景摘要】\n{project_summary}")
     if video_context:
         context_parts.append(f"【当前视频元数据】\n{video_context}")
     if column_outline:
@@ -159,10 +156,8 @@ def _build_base_messages(
         context_parts.append(f"【专栏长期对话记忆】\n{memory_summary}")
     if courseware_text:
         context_parts.append(f"【当前视频课件原文】\n{courseware_text}")
-    if project_evidence:
-        context_parts.append(f"【项目原始证据】\n{project_evidence}")
     if transcript:
-        context_parts.append(f"【已审核视频逐字稿（当前时间点±3分钟）】\n{transcript}")
+        context_parts.append(f"【可用视频逐字稿（当前时间点±3分钟）】\n{transcript}")
     context_block = "\n\n".join(context_parts)
     selected_block = f"\n\n【用户选中的字幕】{selected}" if selected else ""
     user_msg = (
@@ -184,8 +179,6 @@ def build_context(
     history: list[dict] | None = None,
     start_time: float | None = None,
     video_duration: float | None = None,
-    project_summary: str = "",
-    project_evidence: str = "",
     column_outline: str = "",
     memory_summary: str = "",
     video_context: str = "",
@@ -208,8 +201,6 @@ def build_context(
         transcript,
         selected_subtitle,
         question,
-        project_summary=project_summary,
-        project_evidence=project_evidence,
         column_outline=column_outline,
         memory_summary=memory_summary,
         video_context=video_context,

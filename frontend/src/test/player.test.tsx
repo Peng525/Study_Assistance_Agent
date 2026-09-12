@@ -24,16 +24,40 @@ const { artInstances, MockArtplayer } = vi.hoisted(() => {
       remove: vi.fn(),
       update: vi.fn(),
     };
+    layers = {
+      add: vi.fn((opt: any) => {
+        const element = document.createElement("div");
+        const container = this.options.container as HTMLElement;
+        container.appendChild(element);
+        opt.mounted?.(element);
+        return element;
+      }),
+      remove: vi.fn(),
+      update: vi.fn(),
+    };
     private handlers = new Map<string, Array<(...args: unknown[]) => void>>();
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
+      (options.container as HTMLElement).classList.add("art-control-show");
       artInstances.push(this);
+    }
+
+    get template() {
+      return { $player: this.options.container as HTMLElement };
     }
 
     on(event: string, handler: (...args: unknown[]) => void) {
       this.handlers.set(event, [...(this.handlers.get(event) || []), handler]);
     }
+
+    off = vi.fn((event: string, handler?: (...args: unknown[]) => void) => {
+      if (!handler) {
+        this.handlers.delete(event);
+        return;
+      }
+      this.handlers.set(event, (this.handlers.get(event) || []).filter((item) => item !== handler));
+    });
 
     emit(event: string, ...args: unknown[]) {
       this.handlers.get(event)?.forEach((handler) => handler(...args));
@@ -132,6 +156,10 @@ describe("播放器页面", () => {
       fullscreen: true,
     });
     expect(container.querySelector(".player-video-frame")).toBeInTheDocument();
+    const subtitleHost = container.querySelector(".subtitle-layer-host");
+    expect(subtitleHost).toBeInTheDocument();
+    expect(subtitleHost?.closest(".player-video-surface")).toBeInTheDocument();
+    expect(subtitleHost).toHaveClass("subtitle-controls-visible");
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/materials/course-1/playback-ticket",
       expect.objectContaining({
@@ -142,6 +170,7 @@ describe("播放器页面", () => {
     );
 
     unmount();
+    expect(art.off).toHaveBeenCalledWith("control", expect.any(Function));
     expect(art.destroy).toHaveBeenCalledWith(false);
   });
 
@@ -266,6 +295,35 @@ describe("播放器页面", () => {
       artInstances[0].emit("video:timeupdate");
     });
     await waitFor(() => expect(container.querySelector(".subtitle-overlay")).toBeNull());
+  });
+
+  it("跟随 Artplayer control 事件切换字幕安全区且不卸载字幕", async () => {
+    mockMediaFetch({
+      subtitle: "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n当前字幕\n",
+    });
+    const { container } = renderPlayer();
+
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+    act(() => {
+      artInstances[0].currentTime = 2;
+      artInstances[0].emit("video:timeupdate");
+    });
+    expect(await screen.findByText("当前字幕")).toBeInTheDocument();
+
+    const subtitleHost = container.querySelector(".subtitle-layer-host");
+    expect(subtitleHost).toHaveClass("subtitle-controls-visible");
+
+    container.querySelector(".player-video-surface")?.classList.remove("art-control-show");
+    act(() => artInstances[0].emit("ready"));
+    expect(subtitleHost).not.toHaveClass("subtitle-controls-visible");
+
+    act(() => artInstances[0].emit("control", true));
+    expect(subtitleHost).toHaveClass("subtitle-controls-visible");
+    expect(screen.getByText("当前字幕")).toBeInTheDocument();
+
+    act(() => artInstances[0].emit("control", false));
+    expect(subtitleHost).not.toHaveClass("subtitle-controls-visible");
+    expect(screen.getByText("当前字幕")).toBeInTheDocument();
   });
 
   it("真实视频请求失败时显示独立错误且不创建播放器", async () => {

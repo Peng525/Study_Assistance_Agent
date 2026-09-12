@@ -15,9 +15,8 @@ def _now() -> datetime:
 # ---- 字幕审核状态（A3）----
 # 以下是两个正交维度，各自独立回答一个问题，不要混成一个字段：
 #   subtitle_status    字幕「有没有生成好」      pending / generating / ready / error（仅 4 个真值）
-#   review_state       字幕「能不能作为自动 AI 证据」  unreviewed / reviewed
-# 生成完成（ready）不等于审核通过（reviewed）；
-# 未审核的字幕允许展示、允许被用户主动引用，但**不得**自动注入 ±180 秒 Transcript Context。
+#   review_state       字幕「是否经过人工校对」       unreviewed / reviewed
+# 自动证据只要求 ready 且字幕文件真实存在；review_state 仅表示质量状态。
 SUBTITLE_REVIEW_UNREVIEWED = "unreviewed"
 SUBTITLE_REVIEW_REVIEWED = "reviewed"
 
@@ -92,8 +91,7 @@ class Material(Base):
     subtitle_status: Mapped[str] = mapped_column(String(16), default=SUBTITLE_STATUS_PENDING, nullable=False)  # pending/generating/ready/error
     subtitle_source: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'manual'|'whisper'
     subtitle_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # A3：字幕审核状态。与 subtitle_status 正交，详见模块顶部常量说明。
-    # 默认 unreviewed —— 生成的和手动上传的都要审核后才解锁自动 Transcript Context 注入。
+    # 字幕校对状态。默认 unreviewed；不参与 Transcript Context 准入。
     review_state: Mapped[str] = mapped_column(
         String(16), default=SUBTITLE_REVIEW_UNREVIEWED, nullable=False
     )

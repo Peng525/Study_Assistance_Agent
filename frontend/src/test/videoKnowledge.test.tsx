@@ -37,8 +37,8 @@ beforeEach(() => {
   (api.get as any).mockImplementation((url: string) => Promise.resolve({
     data: url === "/admin/columns"
       ? [series]
-      : url === "/admin/project-context"
-        ? { videos: [video] }
+      : url === "/materials/spring-ioc-005"
+        ? video
         : { pages: [{ page: 2, text: "第二页" }, { page: 3, text: "第三页" }] },
   }));
 });

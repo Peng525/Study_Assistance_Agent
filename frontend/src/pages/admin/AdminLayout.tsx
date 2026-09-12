@@ -1,5 +1,5 @@
 import { Layout, Menu } from "antd";
-import { DashboardOutlined, ApiOutlined, BookOutlined, FileSearchOutlined, ReadOutlined, TeamOutlined } from "@ant-design/icons";
+import { DashboardOutlined, ApiOutlined, BookOutlined, FileSearchOutlined, TeamOutlined } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import UserMenu from "../../components/UserMenu";
 
@@ -31,7 +31,6 @@ export default function AdminLayout() {
             { key: "dashboard", icon: <DashboardOutlined />, label: "仪表盘" },
             { key: "model-configs", icon: <ApiOutlined />, label: "模型配置" },
             { key: "columns", icon: <BookOutlined />, label: "专栏管理" },
-            { key: "project-context", icon: <ReadOutlined />, label: "项目背景" },
             { key: "users", icon: <TeamOutlined />, label: "用户管理" },
             { key: "llm-call-logs", icon: <FileSearchOutlined />, label: "AI 调用日志" },
           ]}

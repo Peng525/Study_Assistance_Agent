@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Dropdown, message, Spin } from "antd";
 import Artplayer from "artplayer";
@@ -59,6 +60,7 @@ export default function Player() {
   const [ccVisible, setCcVisible] = useState(loadCcVisible());
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoError, setVideoError] = useState("");
+  const [subtitleHost, setSubtitleHost] = useState<HTMLElement | null>(null);
   const [aiWidth, setAiWidth] = useState(aiWidthRef.current);
   const [resizing, setResizing] = useState(false);
 
@@ -114,7 +116,11 @@ export default function Player() {
     const controller = new AbortController();
     let disposed = false;
     let art: Artplayer | null = null;
+    let subtitleLayerElement: HTMLElement | null = null;
     let lastSave = 0;
+    const setSubtitleControlsVisible = (visible: boolean) => {
+      subtitleLayerElement?.classList.toggle("subtitle-controls-visible", visible);
+    };
     setVideoLoading(true);
     setVideoError("");
     setCurrentTime(0);
@@ -146,6 +152,20 @@ export default function Player() {
         art = player;
         artRef.current = player;
 
+        // 字幕挂在 Artplayer 内部层：普通、网页全屏和原生全屏始终复用同一 DOM。
+        player.layers.add({
+          name: "ai-subtitle",
+          html: "",
+          mounted: (element) => {
+            subtitleLayerElement = element;
+            element.classList.add("subtitle-layer-host", "subtitle-controls-visible");
+            if (!disposed) setSubtitleHost(element);
+          },
+        });
+
+        // 跟随播放器自己的控制栏显隐状态切换字幕安全区，不读取进度条尺寸。
+        player.on("control", setSubtitleControlsVisible);
+
         // E2：CC 开关注入播放器控制栏（音量/设置/全屏同一行，index:25）。
         // 否决右上角浮层——那是产品需求被实现成本偷偷降级，PRD 原文就要求放控制区。
         player.controls.add({
@@ -168,6 +188,7 @@ export default function Player() {
 
         player.on("ready", () => {
           if (disposed) return;
+          setSubtitleControlsVisible(player.template.$player.classList.contains("art-control-show"));
           setVideoLoading(false);
           setVideoDuration(Number.isFinite(player.duration) ? player.duration : null);
           // 编辑器「定位」带 t 参数 → 直接跳到该时间点（优先于恢复进度）
@@ -204,7 +225,9 @@ export default function Player() {
 
     return () => {
       disposed = true;
+      setSubtitleHost(null);
       controller.abort();
+      art?.off("control", setSubtitleControlsVisible);
       art?.destroy(false);
       if (artRef.current === art) artRef.current = null;
     };
@@ -304,13 +327,14 @@ export default function Player() {
                 {videoError}
               </div>
             )}
-            {cues.length > 0 && (
+            {subtitleHost && cues.length > 0 && createPortal(
               <SubtitleOverlay
                 currentTime={currentTime}
                 cues={cues}
                 visible={ccVisible}
                 onCueChange={(c) => setCurrentCue(c)}
-              />
+              />,
+              subtitleHost,
             )}
           </div>
         </main>

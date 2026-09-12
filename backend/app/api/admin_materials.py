@@ -1,6 +1,5 @@
 """管理台素材管理接口（上传/文件列表/删除/扫描/rescan）。"""
 
-import hashlib
 import logging
 import shutil
 import threading
@@ -40,7 +39,7 @@ _CUES_WRITE_LOCK = threading.Lock()
 
 
 class SubtitleReviewRequest(BaseModel):
-    """管理员审核字幕：标记 reviewed 解锁自动证据，或回退 unreviewed。"""
+    """管理员维护可选校对状态；该状态不控制 AI Evidence。"""
 
     review_state: str  # 'reviewed' | 'unreviewed'
 
@@ -438,17 +437,13 @@ def review_subtitle(
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """标记字幕审核状态：reviewed 解锁自动 Transcript Context 注入；unreviewed 回退。
-
-    ⚠️ 措辞纪律：不要用「生成即生效」。生成完成（ready）只代表允许展示/主动引用，
-    未审核（unreviewed）前不得自动作为 AI 证据。
-    """
+    """标记字幕校对状态；reviewed/unreviewed 均可作为 AI Evidence。"""
     if body.review_state not in ("reviewed", "unreviewed"):
         raise HTTPException(status_code=400, detail="review_state 仅支持 reviewed / unreviewed")
     material = db.query(Material).filter(Material.course_id == course_id).first()
     if material is None:
         raise HTTPException(status_code=404, detail="课程不存在")
-    # 只有真实生成/上传好（ready）的字幕才有审核意义；generating/pending/error 不让标记。
+    # 只有真实生成/上传好（ready）的字幕才有校对意义。
     try:
         _do_review_subtitle(material, body.review_state)
     except ValueError as e:
@@ -494,7 +489,7 @@ def save_subtitle_cues(
 
     - 乐观锁：body.revision 必须等于当前 VTT 的 sha1[:8]，否则 409 冲突（前端重新拉取再保存）；
     - 时间轴校验（前后端都做）：非法时间轴会让播放器崩溃，校验失败 400；
-    - 编辑使旧审核失效：review_state 复位 unreviewed（改过的字幕需重新人工抽查）。
+    - 管理员成功保存人工编辑结果后，标记为已校对。
     """
     material = db.query(Material).filter(Material.course_id == course_id).first()
     if material is None:
@@ -529,7 +524,7 @@ def save_subtitle_cues(
             tmp.unlink(missing_ok=True)  # 别留垃圾 tmp 污染下一次扫描
             raise
 
-    material.review_state = "unreviewed"  # 编辑使旧审核失效
+    material.review_state = "reviewed"
     db.commit()
     return {
         "course_id": course_id,
@@ -566,17 +561,6 @@ def _scan_and_upsert(db: Session, course_id: str) -> Material:
 
 def _rescan_material(db: Session, material: Material) -> None:
     """重新扫描单课程：识别三件套 + srt转vtt + 课件提取 + 状态判定。"""
-    # D2：先记下**扫描前**的字幕内容与审核结论，用来判断"这次扫描是否实质改变了字幕"。
-    # 必须在下面 `material.subtitle_path = scan[...]` 覆盖之前取。
-    #
-    # ⚠️ 已知边界（诚实记录，不要当成 bug 去"修"）：指纹是**实时读文件**算的，
-    # 所以只有"字幕文件路径变了"才能察觉内容变化。
-    # 若管理员用新内容**覆盖了同名文件**，扫描时读到的就已经是新内容，
-    # prev 与 new 必然相等 —— 这种情况扫不出来，靠"编辑保存"路径
-    # （`PUT /subtitle/cues` 无条件写 unreviewed）兜底。
-    # 要真正覆盖到同名覆盖场景，得把指纹持久化成一列（不在本轮范围）。
-    prev_subtitle_fp = _subtitle_fingerprint(material.subtitle_path)
-    prev_reviewed = material.review_state == "reviewed"
     scan = storage.scan_course_dir(material.course_id)
     material.video_path = scan["video_path"]
     material.subtitle_path = scan["subtitle_path"]
@@ -613,11 +597,6 @@ def _rescan_material(db: Session, material: Material) -> None:
         if material.subtitle_source is None:
             material.subtitle_source = _infer_subtitle_source(material.subtitle_path)
         material.subtitle_error = None
-        # D2：只有字幕内容**真的变了**才复位审核结论。
-        # 用内容指纹而非 mtime：文件被复制/恢复/打包解包时 mtime 会无意义地变化，
-        # 让管理员"只是扫了一下"就丢掉全部审核结论。
-        if prev_reviewed and _subtitle_fingerprint(material.subtitle_path) != prev_subtitle_fp:
-            material.review_state = "unreviewed"
     else:
         # 无字幕文件：rescan 只重新识别素材，**不再自动排字幕任务**
         # （PRD §5.5A.6：Whisper 失败不自动重试，由 admin 手动触发）。
@@ -655,9 +634,6 @@ def _rescan_material(db: Session, material: Material) -> None:
             "[rescan] %s 无字幕文件（扫描前状态 %s → 现在 %s），如需生成请 admin 手动点击生成字幕",
             material.course_id, prev_status, material.subtitle_status,
         )
-        # 字幕没了，旧的审核结论无从谈起
-        if prev_reviewed:
-            material.review_state = "unreviewed"
 
     # 课件提取
     if material.courseware_path:
@@ -701,44 +677,14 @@ def _do_generate_subtitle(material: Material) -> None:
     # 进度条不渲染、按钮态不变化（v8 修复的 root-cause，PRD §5.5A.3）。
     whisper_service.enqueue(material.course_id, material.video_path)
     material.subtitle_status = "generating"
-    material.subtitle_source = "whisper"
     material.subtitle_error = None   # 重试时清掉上一次的失败文案
-    # 重新生成意味着"这一版字幕还没被看过"，旧审核结论必须作废。
-    # 不复位的话，新生成的机器转写会顶着上一版的「已审核」直接获得
-    # 自动作为 Transcript Context 的资格 —— 未校对的转写混进上下文会污染答案。
-    material.review_state = "unreviewed"
+    # 任务失败或取消时仍是旧字幕内容，必须保留它原有的来源和校对状态；
+    # 只有 worker 成功写回新字幕文件后，才切换来源并把新版本标为未校对。
 
 
 # Whisper 落盘命名（与 whisper_service._run_whisper 的 `<视频主名>.whisper.vtt` 严格对应）。
 # 人工上传的字幕由 storage 重命名为 `subtitle_<uuid>.vtt`，或保留用户自放的文件名。
 _WHISPER_VTT_SUFFIX = ".whisper.vtt"
-
-
-def _subtitle_fingerprint(subtitle_path: str | None) -> str | None:
-    """字幕**内容**指纹（D2 的判定依据）。文件不存在/解析失败/无 cue 时返回 None。
-
-    基于**解析后的 cue 文本 + 时间轴**，不是文件字节，也不是 mtime：
-
-    - 不用字节：`srt → vtt` 转换会重写整个文件，字节全变但内容一字未改。
-      用字节的话，扫描一次就把审核结论冲掉 —— 正是 D2 要避免的。
-    - 不用 mtime：文件被复制 / 恢复 / 打包解包时 mtime 会无意义地变化。
-      管理员"只是扫了一下素材"不该丢掉审核结论（PRD §5.5A.7）。
-    """
-    if not subtitle_path:
-        return None
-    path = Path(subtitle_path)
-    if not path.is_file():
-        return None
-    try:
-        cues = parse_vtt_cues(path.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:  # noqa: BLE001 — 坏字幕不该让扫描整个失败
-        return None
-    if not cues:
-        return None
-    payload = "\n".join(
-        f"{c.get('start')}|{c.get('end')}|{(c.get('text') or '').strip()}" for c in cues
-    )
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _infer_subtitle_source(subtitle_path: str | None) -> str:
@@ -747,9 +693,9 @@ def _infer_subtitle_source(subtitle_path: str | None) -> str:
     ⚠️ **只能作为 legacy fallback**：仅在 `subtitle_source is None`（老数据从未写过来源）时调用，
     **不得覆盖数据库里已有的 provenance**。扫描是读取磁盘事实，不是"字幕从哪来"这件事的发生点。
 
-    ⚠️ 判据**偏向标成 whisper**：把 AI 转写误标成「人工上传」时，管理员会以为
-    已经有人校过而跳过抽查直接解锁自动证据注入 —— 未校对的机器转写混进上下文
-    会直接污染答案，这是本项目最核心的卖点。反向误标只是显示不准，无安全风险。
+    ⚠️ 判据**偏向标成 whisper**：来源是质量提示，不是 Evidence 准入门槛。
+    把 AI 转写误标成「人工上传」会让管理员误判其来源并跳过必要校对；
+    反向误标只会让来源展示偏保守。
     """
     if not subtitle_path:
         return "whisper"
@@ -795,7 +741,7 @@ def _do_cancel_subtitle(material: Material) -> None:
 
 def _do_review_subtitle(material: Material, review_state: str) -> None:
     if material.subtitle_status not in REVIEWABLE:
-        raise ValueError("字幕尚未生成完成，无法审核（仅 ready 可审核）")
+        raise ValueError("字幕尚未生成完成，无法修改校对状态（仅 ready 可操作）")
     material.review_state = review_state
 
 

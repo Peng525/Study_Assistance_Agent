@@ -97,101 +97,56 @@ def _pptx_bytes(text: str) -> bytes:
 
 
 def test_summary_requires_human_publish_and_source_change_marks_stale(client, db_session):
-    upload = client.post(
-        "/api/admin/project-context/sources",
-        files={"file": ("project.md", "# 项目\n内部代号 Aurora-17".encode(), "text/markdown")},
-        headers=_headers(),
-    )
-    if upload.status_code != 200:
-        pytest.fail(upload.text)
-    assert upload.json()["summary_refresh_required"] is True
-
-    generated = client.post("/api/admin/project-context/summary/generate", headers=_headers())
-    assert generated.status_code == 200
-    draft = generated.json()["draft"]
-    assert draft["status"] == "draft"
-    assert client.get("/api/admin/project-context", headers=_headers()).json()["published"] is None
-
-    published = client.post(
-        "/api/admin/project-context/summary/publish",
-        json={"version_id": draft["id"]},
-        headers=_headers(),
-    )
-    assert published.status_code == 200
-    assert published.json()["published"]["version"] == 1
-    assert db_session.query(ProjectChunk).count() >= 1
-
-    second = client.post(
-        "/api/admin/project-context/sources",
-        files={"file": ("more.md", "# 约束\n只能本地运行".encode(), "text/markdown")},
-        headers=_headers(),
-    )
-    assert second.status_code == 200
-    state = client.get("/api/admin/project-context", headers=_headers()).json()
-    assert state["published"]["is_stale"] is True
-    assert state["published"]["summary_text"] == published.json()["published"]["summary_text"]
+    responses = [
+        client.get("/api/admin/project-context", headers=_headers()),
+        client.post(
+            "/api/admin/project-context/sources",
+            files={"file": ("project.md", b"legacy", "text/markdown")},
+            headers=_headers(),
+        ),
+        client.post("/api/admin/project-context/summary/generate", headers=_headers()),
+        client.put(
+            "/api/admin/project-context/summary/draft",
+            json={"version_id": None, "summary_text": "legacy"},
+            headers=_headers(),
+        ),
+        client.post(
+            "/api/admin/project-context/summary/publish",
+            json={"version_id": 1},
+            headers=_headers(),
+        ),
+    ]
+    assert all(response.status_code == 410 for response in responses)
+    assert db_session.query(ProjectSource).count() == 0
 
 
 def test_publish_rejects_draft_when_sources_changed(client):
-    client.post(
-        "/api/admin/project-context/sources",
-        files={"file": ("project.md", "# 项目\n内部代号 Aurora-17".encode(), "text/markdown")},
-        headers=_headers(),
-    )
-    draft = client.post("/api/admin/project-context/summary/generate", headers=_headers()).json()["draft"]
-    client.post(
-        "/api/admin/project-context/sources",
-        files={"file": ("changed.md", "# 新资料\n事实变化".encode(), "text/markdown")},
-        headers=_headers(),
-    )
     response = client.post(
         "/api/admin/project-context/summary/publish",
-        json={"version_id": draft["id"]},
+        json={"version_id": 1},
         headers=_headers(),
     )
-    assert response.status_code == 409
+    assert response.status_code == 410
 
 
 def test_large_sources_can_use_manual_draft_when_ai_generation_is_refused(client, db_session):
-    uploaded = client.post(
+    response = client.post(
         "/api/admin/project-context/sources",
         files={"file": ("large.md", ("# 背景\n" + "项目事实" * 5_100).encode(), "text/markdown")},
         headers=_headers(),
     )
-    assert uploaded.status_code == 200
-    refused = client.post("/api/admin/project-context/summary/generate", headers=_headers())
-    assert refused.status_code == 400
-    assert "超过摘要生成上限" in refused.json()["detail"]
-
-    manual = client.put(
-        "/api/admin/project-context/summary/draft",
-        json={"version_id": None, "summary_text": "# 项目定位\n人工审核的大资料摘要"},
-        headers=_headers(),
-    )
-    assert manual.status_code == 200
-    published = client.post(
-        "/api/admin/project-context/summary/publish",
-        json={"version_id": manual.json()["draft"]["id"]},
-        headers=_headers(),
-    )
-    assert published.status_code == 200
-    assert db_session.query(ProjectChunk).count() > 8
+    assert response.status_code == 410
+    assert db_session.query(ProjectSource).count() == 0
 
 
 def test_summary_draft_has_no_independent_2k_limit(client):
-    client.post(
-        "/api/admin/project-context/sources",
-        files={"file": ("project.md", "# 项目\n内部代号 Aurora-17".encode(), "text/markdown")},
-        headers=_headers(),
-    )
     long_summary = "# 项目定位\n" + "完整项目事实" * 600
     saved = client.put(
         "/api/admin/project-context/summary/draft",
         json={"version_id": None, "summary_text": long_summary},
         headers=_headers(),
     )
-    assert saved.status_code == 200
-    assert saved.json()["draft"]["summary_text"] == long_summary
+    assert saved.status_code == 410
 
 
 def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_path):
@@ -225,10 +180,9 @@ def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_p
     db_session.add(source)
     db_session.commit()
 
-    # GET 只能读取旧视频状态，不能偷偷创建 theory 配置并切断旧上下文。
+    # 旧项目背景聚合入口已退役；专栏视频知识接口仍可独立工作。
     state = client.get("/api/admin/project-context", headers=_headers())
-    assert state.status_code == 200
-    assert all(video["legacy_context"] for video in state.json()["videos"])
+    assert state.status_code == 410
     assert db_session.query(VideoKnowledge).count() == 0
 
     mapped_a = client.put(
@@ -262,12 +216,16 @@ def test_shared_ppt_maps_different_pages_to_two_videos(client, db_session, tmp_p
 
 def test_source_outline_is_draft_until_admin_saves_it(client, db_session, tmp_path):
     project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="案例", normalized_name="案例")
+    db_session.add(series)
+    db_session.flush()
     material = Material(course_id="case-video", dir_path=str(tmp_path / "case-video"), status="ready")
     db_session.add(material)
     db_session.flush()
     bind_material(db_session, material, project)
     source = ProjectSource(
         project_id=project.id,
+        series_id=series.id,
         original_filename="case.pptx",
         source_format="pptx",
         file_path=str(tmp_path / "case.pptx"),
@@ -293,9 +251,14 @@ def test_source_outline_is_draft_until_admin_saves_it(client, db_session, tmp_pa
 
 
 def test_same_name_replace_preserves_column_and_invalidates_context(client, db_session, tmp_path):
+    project = ensure_default_project(db_session)
+    series = ContentSeries(project_id=project.id, name="Spring", normalized_name="spring")
+    db_session.add(series)
+    db_session.commit()
     uploaded = client.post(
         "/api/admin/project-context/sources",
         files={"file": ("Spring.pptx", _pptx_bytes("旧课件"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        data={"series_id": str(series.id)},
         headers=_headers(),
     )
     assert uploaded.status_code == 200
@@ -307,6 +270,7 @@ def test_same_name_replace_preserves_column_and_invalidates_context(client, db_s
     bind_material(db_session, material, ensure_default_project(db_session))
     knowledge = VideoKnowledge(
         material_id=material.id,
+        series_id=series.id,
         source_id=source_id,
         course_type="theory",
         page_start=1,
@@ -325,6 +289,7 @@ def test_same_name_replace_preserves_column_and_invalidates_context(client, db_s
     duplicate = client.post(
         "/api/admin/project-context/sources",
         files={"file": ("SPRING.PPTX", _pptx_bytes("新课件"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        data={"series_id": str(series.id)},
         headers=_headers(),
     )
     assert duplicate.status_code == 409
@@ -341,30 +306,28 @@ def test_same_name_replace_preserves_column_and_invalidates_context(client, db_s
     db_session.expire_all()
     assert db_session.get(ProjectSourceOutline, outline.id).status == "stale"
     refreshed = db_session.get(VideoKnowledge, knowledge.id)
-    assert (refreshed.page_start, refreshed.page_end) == (1, 1)
+    assert (refreshed.page_start, refreshed.page_end) == (None, None)
     assert refreshed.knowledge_text_cached is None
 
 
-def test_deleting_source_marks_published_summary_stale(client):
-    uploaded = client.post(
-        "/api/admin/project-context/sources",
-        files={"file": ("project.md", "# 项目\n内部代号 Aurora-17".encode(), "text/markdown")},
-        headers=_headers(),
+def test_retired_project_context_cannot_delete_legacy_archive(client, db_session):
+    project = ensure_default_project(db_session)
+    source = ProjectSource(
+        project_id=project.id,
+        original_filename="project.md",
+        source_format="md",
+        file_path="project.md",
+        text_cached="# 项目\n内部代号 Aurora-17",
+        source_hash="c" * 64,
+        status="active",
     )
-    source_id = uploaded.json()["source"]["id"]
-    draft = client.post("/api/admin/project-context/summary/generate", headers=_headers()).json()["draft"]
-    assert client.post(
-        "/api/admin/project-context/summary/publish",
-        json={"version_id": draft["id"]},
-        headers=_headers(),
-    ).status_code == 200
+    db_session.add(source)
+    db_session.commit()
 
-    deleted = client.delete(f"/api/admin/project-context/sources/{source_id}", headers=_headers())
-    assert deleted.status_code == 200
-    assert deleted.json()["summary_refresh_required"] is True
-    state = client.get("/api/admin/project-context", headers=_headers()).json()
-    assert state["sources"] == []
-    assert state["published"]["is_stale"] is True
+    deleted = client.delete(f"/api/admin/project-context/sources/{source.id}", headers=_headers())
+    assert deleted.status_code == 410
+    db_session.refresh(source)
+    assert source.status == "active"
 
 
 def test_existing_session_remains_bound_to_superseded_summary(db_session):

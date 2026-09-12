@@ -251,9 +251,8 @@ def test_build_prompt_without_anything_returns_fallback():
 def test_state_machine_unchanged_with_prompt(client, db_session, monkeypatch, tmp_path):  # noqa: F811
     """Test 6：加了 prompt 之后，生成成功仍然是 ready + unreviewed + whisper。
 
-    关键点是 **unreviewed**：Prompt 只能提升识别准确率，不能替代人工审核。
-    素材初始为 reviewed，触发重新生成后必须被打回 unreviewed，
-    否则未校对的机器转写会顶着"已审核"直接获得自动注入上下文的资格。
+    Prompt 只能提升识别准确率，不改变任务生命周期：排队和生成阶段保留旧字幕
+    的校对状态；只有新字幕成功写回后才重置为 unreviewed。
     """
     monkeypatch.setattr(whisper_service, "is_ffmpeg_available", lambda: True)
     monkeypatch.setattr(whisper_service, "_start_worker", lambda: None)
@@ -270,7 +269,7 @@ def test_state_machine_unchanged_with_prompt(client, db_session, monkeypatch, tm
             status="ready",
             video_path=str(video),
             subtitle_status="pending",
-            review_state="reviewed",   # 故意：证明会被打回
+            review_state="reviewed",   # 故意：证明入队时保留、成功后才重置
         )
     )
     db_session.commit()
@@ -282,7 +281,8 @@ def test_state_machine_unchanged_with_prompt(client, db_session, monkeypatch, tm
 
     material = db_session.query(Material).filter(Material.course_id == "c-prompt").one()
     assert material.subtitle_status == "generating"
-    assert material.review_state == "unreviewed"
+    assert material.review_state == "reviewed"
+    assert material.subtitle_source is None
 
     # 模拟 worker 跑完写回（真实链路里由 _worker_loop 调用）
     whisper_service._write_back_to_db(

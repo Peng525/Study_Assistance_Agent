@@ -954,7 +954,7 @@ def _write_back_to_db(
 
     | outcome | subtitle_status | subtitle_error | 其它字段 |
     |---|---|---|---|
-    | `"success"` | `ready` | `None` | 写 `subtitle_path` / `subtitle_source='whisper'` / `subtitle_source_format='vtt'` |
+    | `"success"` | `ready` | `None` | 写字幕路径/来源，并把新版本标为 `unreviewed` |
     | `"failed"` | `error` | 失败原因（截到 2000 字防 SQLite 字段超限） | 不动 |
     | `"cancelled"` | `pending` | `None` | **一律不动**（见下） |
 
@@ -987,6 +987,9 @@ def _write_back_to_db(
             material.subtitle_source = "whisper"
             material.subtitle_status = "ready"
             material.subtitle_error = None
+            # 新生成的字幕内容尚未经过人工校对；只有实际成功写回才重置，
+            # 失败或取消不会冲掉上一版字幕的质量标记。
+            material.review_state = "unreviewed"
         elif outcome == "cancelled":
             material.subtitle_status = "pending"
             material.subtitle_error = None
