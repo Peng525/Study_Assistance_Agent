@@ -61,6 +61,8 @@ export default function Player() {
   const [videoLoading, setVideoLoading] = useState(true);
   const [videoError, setVideoError] = useState("");
   const [subtitleHost, setSubtitleHost] = useState<HTMLElement | null>(null);
+  const [titleHost, setTitleHost] = useState<HTMLElement | null>(null);
+  const [displayTitle, setDisplayTitle] = useState("当前视频");
   const [aiWidth, setAiWidth] = useState(aiWidthRef.current);
   const [resizing, setResizing] = useState(false);
 
@@ -85,6 +87,27 @@ export default function Player() {
     setAiWidth(next);
     localStorage.setItem(AI_WIDTH_KEY, String(next));
   };
+
+  // 展示标题独立加载，不让标题请求阻塞播放票据。
+  useEffect(() => {
+    const controller = new AbortController();
+    setDisplayTitle("当前视频");
+    fetch(`/api/materials/${encodeURIComponent(courseId || "")}`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("title unavailable");
+        return response.json() as Promise<{ display_title?: string | null }>;
+      })
+      .then((material) => {
+        if (controller.signal.aborted) return;
+        const title = material.display_title;
+        setDisplayTitle(title?.trim() || "当前视频");
+      })
+      .catch(() => { /* 标题失败保留兜底，不影响视频。 */ });
+    return () => controller.abort();
+  }, [courseId]);
 
   // 加载字幕
   useEffect(() => {
@@ -117,10 +140,20 @@ export default function Player() {
     let disposed = false;
     let art: Artplayer | null = null;
     let subtitleLayerElement: HTMLElement | null = null;
+    let titleLayerElement: HTMLElement | null = null;
+    let controlsVisible = true;
+    let paused = true;
     let lastSave = 0;
-    const setSubtitleControlsVisible = (visible: boolean) => {
-      subtitleLayerElement?.classList.toggle("subtitle-controls-visible", visible);
+    const syncTitleVisibility = () => {
+      titleLayerElement?.classList.toggle("player-title-visible", controlsVisible || paused);
     };
+    const setSubtitleControlsVisible = (visible: boolean) => {
+      controlsVisible = visible;
+      subtitleLayerElement?.classList.toggle("subtitle-controls-visible", visible);
+      syncTitleVisibility();
+    };
+    const onPlay = () => { paused = false; syncTitleVisibility(); };
+    const onPause = () => { paused = true; syncTitleVisibility(); };
     setVideoLoading(true);
     setVideoError("");
     setCurrentTime(0);
@@ -165,6 +198,18 @@ export default function Player() {
 
         // 跟随播放器自己的控制栏显隐状态切换字幕安全区，不读取进度条尺寸。
         player.on("control", setSubtitleControlsVisible);
+        player.layers.add({
+          name: "current-video-title",
+          html: "",
+          mounted: (element) => {
+            titleLayerElement = element;
+            element.classList.add("player-title-host");
+            syncTitleVisibility();
+            if (!disposed) setTitleHost(element);
+          },
+        });
+        player.on("video:play", onPlay);
+        player.on("video:pause", onPause);
 
         // E2：CC 开关注入播放器控制栏（音量/设置/全屏同一行，index:25）。
         // 否决右上角浮层——那是产品需求被实现成本偷偷降级，PRD 原文就要求放控制区。
@@ -188,6 +233,7 @@ export default function Player() {
 
         player.on("ready", () => {
           if (disposed) return;
+          paused = player.video.paused;
           setSubtitleControlsVisible(player.template.$player.classList.contains("art-control-show"));
           setVideoLoading(false);
           setVideoDuration(Number.isFinite(player.duration) ? player.duration : null);
@@ -226,8 +272,11 @@ export default function Player() {
     return () => {
       disposed = true;
       setSubtitleHost(null);
+      setTitleHost(null);
       controller.abort();
       art?.off("control", setSubtitleControlsVisible);
+      art?.off("video:play", onPlay);
+      art?.off("video:pause", onPause);
       art?.destroy(false);
       if (artRef.current === art) artRef.current = null;
     };
@@ -326,6 +375,10 @@ export default function Player() {
               <div className="player-video-status player-video-status--error" role="alert">
                 {videoError}
               </div>
+            )}
+            {titleHost && createPortal(
+              <div className="player-title" title={displayTitle}>{displayTitle}</div>,
+              titleHost,
             )}
             {subtitleHost && cues.length > 0 && createPortal(
               <SubtitleOverlay

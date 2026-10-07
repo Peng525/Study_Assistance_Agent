@@ -39,11 +39,13 @@ export const adminMaterials = {
       courseType?: string;
       sourceId?: number;
       seriesId?: number;
+      displayTitle?: string;
     },
     onUploadProgress?: (e: any) => void,
   ) => {
     const fd = new FormData();
     fd.append("file", p.file);
+    if (p.displayTitle !== undefined) fd.append("display_title", p.displayTitle);
     const q = new URLSearchParams({
       course_id: p.courseId,
       file_type: p.fileType,

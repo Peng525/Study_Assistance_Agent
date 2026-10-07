@@ -17,6 +17,7 @@ from app.models.models import ContentSeries, Material, ProjectSource, User, Vide
 from app.services import storage
 from app.services import whisper_service
 from app.services.context_builder import parse_vtt_cues
+from app.services.material_title import resolve_display_title
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class MaterialListItem(BaseModel):
     subtitle_queue_position: int = 0
     review_state: str
     title: str | None = None
+    display_title: str = "当前视频"
     duration: float | None = None
     course_type: str | None = None
     source_id: int | None = None
@@ -254,7 +256,8 @@ def list_materials(current: User = Depends(get_current_user), db: Session = Depe
             **_peek_runtime(m.course_id, m.subtitle_status),
             # 字幕校对状态（unreviewed/reviewed），仅作质量标记。
             "review_state": m.review_state,
-            "title": _extract_title(m.courseware_text_cached),
+            "title": resolve_display_title(m.display_title, m.video_original_filename),
+            "display_title": resolve_display_title(m.display_title, m.video_original_filename),
             "duration": _extract_duration(m.subtitle_path),
             "course_type": (
                 knowledge_by_material[m.id].course_type
@@ -295,6 +298,7 @@ def get_material(course_id: str, current: User = Depends(get_current_user), db: 
         "page_end": knowledge.page_end if knowledge else None,
         "knowledge_text": knowledge.knowledge_text_cached if knowledge else "",
         "video_name": material.video_original_filename or material.course_id,
+        "display_title": resolve_display_title(material.display_title, material.video_original_filename),
     }
 
 

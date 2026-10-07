@@ -500,15 +500,22 @@ body {
   margin-bottom: 4px;
 }
 
+.course-container {
+  box-sizing: border-box;
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
 .course-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
   gap: 16px;
 }
 
 .course-card {
+  min-width: 0;
   width: 100%;
-  height: 100%;
 }
 
 .course-card__cover {
@@ -517,31 +524,69 @@ body {
   aspect-ratio: 16 / 9;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 24px 16px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%);
+  text-decoration: none;
   color: #fff;
-  font-size: clamp(20px, 1.6vw, 28px);
-  font-weight: 700;
+  font-size: clamp(18px, calc(1.6vw - 2px), 20px);
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
 }
 
-.course-card__cover-title,
-.course-card__title {
-  display: -webkit-box;
+.course-card__cover-title {
+  min-width: 0;
+  max-width: 100%;
+  display: block;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.course-card__title-row {
-  display: flex;
-  min-height: 44px;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
+.course-card__cover:hover { color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.18); }
+.course-card__cover:focus-visible { outline: 3px solid #0958d9; outline-offset: 3px; }
+.course-card__duration {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  font-size: 12px;
+  background: rgba(0,0,0,.6);
+  padding: 2px 6px;
+  border-radius: 4px;
 }
+
+.player-title-host {
+  position: absolute !important;
+  top: 16px;
+  left: 16px;
+  max-width: 60%;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 160ms ease, visibility 160ms ease;
+}
+.player-title-host.player-title-visible { opacity: 1; visibility: visible; }
+.player-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: #fff;
+  background: rgba(0, 0, 0, .45);
+  font-size: 16px;
+  line-height: 1.5;
+  pointer-events: auto;
+}
+.art-fullscreen .player-title,
+.art-fullscreen-web .player-title { font-size: 18px; }
 
 .subtitle-layer-host {
   position: absolute !important;
   inset: 0;
+  container-type: inline-size;
   pointer-events: none;
 }
 
@@ -558,6 +603,8 @@ body {
   background: var(--subtitle-bg);
   color: var(--subtitle-text);
   font-size: clamp(22px, 1.6vw, 28px);
+  /* 跟随播放器实际宽度，AI 面板展开/拖宽时适度缩小；上行兼容旧浏览器。 */
+  font-size: clamp(18px, 2cqw, 28px);
   line-height: 1.5;
   text-align: center;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
@@ -584,16 +631,4 @@ body {
 .art-fullscreen .subtitle-controls-visible .subtitle-overlay,
 .art-fullscreen-web .subtitle-controls-visible .subtitle-overlay {
   bottom: 96px;
-}
-
-@media (max-width: 1439px) {
-  .course-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (max-width: 1199px) {
-  .course-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-@media (max-width: 767px) {
-  .course-grid { grid-template-columns: minmax(0, 1fr); }
 }

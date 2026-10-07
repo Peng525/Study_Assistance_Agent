@@ -100,6 +100,7 @@ class Material(Base):
     courseware_text_cached: Mapped[str | None] = mapped_column(Text, nullable=True)
     courseware_has_chapters: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     video_original_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    display_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     subtitle_original_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
     courseware_original_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

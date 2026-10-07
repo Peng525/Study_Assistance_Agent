@@ -1,5 +1,4 @@
-import { Badge, Card, Tag } from "antd";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 export interface CourseCardData {
   course_id: string;
@@ -7,6 +6,7 @@ export interface CourseCardData {
   courseware_format?: string | null;
   subtitle_status?: string;
   title?: string | null;
+  display_title?: string | null;
   description?: string;
   duration?: number | null;
 }
@@ -22,53 +22,15 @@ function formatDuration(seconds?: number | null): string {
 }
 
 export default function CourseCard({ course }: { course: CourseCardData }) {
-  const navigate = useNavigate();
+  const title = course.display_title?.trim() || "当前视频";
   return (
-    <Card
-      hoverable
-      className="course-card"
-      cover={
-        <div
-          className="course-card__cover"
-          style={{
-            background: "linear-gradient(135deg, #1677ff 0%, #4096ff 100%)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-          }}
-        >
-          <span className="course-card__cover-title">{course.title || course.course_id}</span>
-          {course.duration ? (
-            <span
-              style={{
-                position: "absolute",
-                bottom: 8,
-                right: 8,
-                fontSize: 12,
-                background: "rgba(0,0,0,0.6)",
-                padding: "2px 6px",
-                borderRadius: 4,
-              }}
-            >
-              {formatDuration(course.duration)}
-            </span>
-          ) : null}
-        </div>
-      }
-      onClick={() => navigate(`/course/${course.course_id}`)}
+    <Link
+      className="course-card course-card__cover"
+      to={`/course/${course.course_id}`}
+      title={title}
     >
-      <div className="course-card__title-row">
-        <strong className="course-card__title">{course.title || course.course_id}</strong>
-        <Badge status="success" text="Ready" />
-      </div>
-      <div style={{ marginTop: 8, color: "var(--text-secondary)", fontSize: 12 }}>
-        {course.description || course.course_id}
-      </div>
-      <div style={{ marginTop: 8 }}>
-        <Tag>{course.course_id}</Tag>
-        {course.courseware_format && <Tag color="blue">{course.courseware_format}</Tag>}
-      </div>
-    </Card>
+      <span className="course-card__cover-title" title={title}>{title}</span>
+      {course.duration ? <span className="course-card__duration">{formatDuration(course.duration)}</span> : null}
+    </Link>
   );
 }

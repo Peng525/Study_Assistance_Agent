@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import Player from "../pages/Player";
 import { useAuthStore } from "../store/auth";
 
@@ -9,6 +9,7 @@ const { artInstances, MockArtplayer } = vi.hoisted(() => {
     options: Record<string, unknown>;
     currentTime = 0;
     duration = 600;
+    video = { paused: true };
     seek = 0;
     pause = vi.fn();
     destroy = vi.fn();
@@ -79,10 +80,13 @@ vi.mock("antd", async (importOriginal) => {
 
 const aiPlaceholder = "例如：我现在看到在创建 subagent，我想知道创建 subagent 应该怎么做。";
 
-function mockMediaFetch(options: { subtitle?: string; ticketOk?: boolean; chatOk?: boolean } = {}) {
+function mockMediaFetch(options: { subtitle?: string; ticketOk?: boolean; chatOk?: boolean; title?: string } = {}) {
   const { subtitle, ticketOk = true, chatOk = false } = options;
   const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
+    if (/\/api\/materials\/course-\d$/.test(url)) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ display_title: options.title }) } as Response);
+    }
     if (url.endsWith("/subtitle")) {
       return Promise.resolve({
         ok: subtitle !== undefined,
@@ -138,6 +142,76 @@ beforeEach(() => {
 });
 
 describe("播放器页面", () => {
+  it("切课取消旧标题请求，迟到的旧结果不覆盖新标题", async () => {
+    const media = mockMediaFetch();
+    const pending: Array<{ signal: AbortSignal; resolve: (value: Response) => void }> = [];
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (/\/api\/materials\/course-\d$/.test(String(input))) return new Promise<Response>((resolve) => {
+        pending.push({ signal: init!.signal as AbortSignal, resolve });
+      });
+      return media(input, init);
+    });
+    const { container, unmount } = render(<MemoryRouter initialEntries={["/course/course-1"]}>
+      <Link to="/course/course-2">切课</Link>
+      <Routes><Route path="/course/:courseId" element={<Player />} /></Routes>
+    </MemoryRouter>);
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fireEvent.click(screen.getByText("切课"));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(pending[0].signal.aborted).toBe(true);
+    await act(async () => pending[1].resolve({ ok: true, json: async () => ({ display_title: "新课程" }) } as Response));
+    await waitFor(() => expect(container.querySelector(".player-title")).toHaveTextContent("新课程"));
+    await act(async () => pending[0].resolve({ ok: true, json: async () => ({ display_title: "旧课程" }) } as Response));
+    expect(container.querySelector(".player-title")).toHaveTextContent("新课程");
+    unmount();
+    expect(pending[1].signal.aborted).toBe(true);
+  });
+
+  it("标题请求失败不阻塞播放器，ready 同步实际播放状态", async () => {
+    const media = mockMediaFetch();
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => /\/api\/materials\/course-\d$/.test(String(input))
+      ? Promise.reject(new Error("offline")) : media(input, init));
+    const { container } = renderPlayer();
+    await waitFor(() => expect(artInstances).toHaveLength(1));
+    const art = artInstances[0];
+    art.video.paused = false;
+    art.template.$player.classList.remove("art-control-show");
+    act(() => art.emit("ready"));
+    expect(container.querySelector(".player-title")).toHaveTextContent("当前视频");
+    expect(container.querySelector(".player-title-host")).not.toHaveClass("player-title-visible");
+  });
+
+  it("标题在播放器内部，暂停优先且显隐不卸载节点", async () => {
+    const title = "容器注册 @Bean <script> 完整课程名称";
+    mockMediaFetch({ title });
+    const { container, unmount } = renderPlayer();
+    await waitFor(() => expect(container.querySelector(".player-title")).toHaveTextContent(title));
+    const host = container.querySelector(".player-title-host")!;
+    const node = host.firstChild;
+    const art = artInstances[0];
+    expect(host.closest(".player-video-surface")).toBeInTheDocument();
+    expect(host.querySelector("script")).toBeNull();
+    expect(host.firstElementChild).toHaveAttribute("title", title);
+    act(() => art.emit("control", false));
+    expect(host).toHaveClass("player-title-visible");
+    act(() => art.emit("video:play"));
+    expect(host).not.toHaveClass("player-title-visible");
+    act(() => art.emit("control", true));
+    expect(host).toHaveClass("player-title-visible");
+    act(() => { art.emit("control", false); art.emit("video:pause"); });
+    expect(host).toHaveClass("player-title-visible");
+    expect(host.firstChild).toBe(node);
+    unmount();
+    expect(art.off).toHaveBeenCalledWith("video:play", expect.any(Function));
+    expect(art.off).toHaveBeenCalledWith("video:pause", expect.any(Function));
+  });
+
+  it.each([undefined, "", "   "])("空标题 %s 不显示内部 ID", async (title) => {
+    mockMediaFetch({ title });
+    const { container } = renderPlayer();
+    await waitFor(() => expect(container.querySelector(".player-title")).toHaveTextContent("当前视频"));
+    expect(container.querySelector(".player-title")).not.toHaveTextContent("course-1");
+  });
   it("用已鉴权请求换取播放票据，并交给播放器原生加载", async () => {
     const fetchMock = mockMediaFetch();
     const { container, unmount } = renderPlayer();

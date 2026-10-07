@@ -5,9 +5,10 @@ import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,7 @@ from app.api.deps import require_admin
 from app.core.database import get_db
 from app.models.models import ContentSeries, Material, ProjectSource, User, VideoKnowledge
 from app.services import storage
+from app.services.material_title import resolve_display_title
 from app.services import whisper_service
 from app.services.courseware import extract_courseware
 from app.services.project_context import (
@@ -102,11 +104,16 @@ async def upload(
     course_type: str = "theory",
     source_id: int | None = None,
     series_id: int | None = None,
+    display_title: Annotated[str | None, Form()] = None,
     current: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if file_type not in storage.FILE_TYPES:
         raise HTTPException(status_code=400, detail="未知文件类型")
+    if file_type == "video" and display_title is not None:
+        display_title = display_title.strip()
+        if not display_title or len(display_title) > 256:
+            raise HTTPException(status_code=400, detail="视频标题须为 1～256 个字符")
     if file_type == "video" and course_type not in {"theory", "practice"}:
         raise HTTPException(status_code=400, detail="课程类型仅支持 theory 或 practice")
     selected_source = None
@@ -211,6 +218,11 @@ async def upload(
         material = Material(course_id=course_id, dir_path=str(storage._course_dir(course_id)))
         db.add(material)
     setattr(material, _ORIGINAL_FIELD[file_type], original_filename)
+    if file_type == "video":
+        # 旧调用方省略标题时保留已有自定义值；新视频才使用文件名默认值。
+        material.display_title = display_title if display_title is not None else resolve_display_title(
+            material.display_title, original_filename,
+        )
     material.uploaded_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -242,6 +254,7 @@ async def upload(
     return {
         "message": f"{cfg['label']}上传成功",
         "filename": original_filename,
+        "display_title": resolve_display_title(material.display_title, material.video_original_filename),
         "path": str(dest),
         "course_id": course_id,
         "course_type": course_type if file_type == "video" else None,

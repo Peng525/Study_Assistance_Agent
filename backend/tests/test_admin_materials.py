@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.admin_materials import router as materials_router
+from app.api.materials import router as public_materials_router
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password
 from app.models.models import ContentSeries, Material, ProjectSource, User, VideoKnowledge
@@ -27,6 +28,7 @@ def client(db_session, tmp_path, monkeypatch):
 
     app = FastAPI()
     app.include_router(materials_router)
+    app.include_router(public_materials_router)
     app.dependency_overrides[get_db] = _get_db_override
     return TestClient(app)
 
@@ -47,6 +49,39 @@ def test_upload_video_success(client, db_session):
     material = db_session.query(Material).filter(Material.course_id == "c1").one()
     context = db_session.query(VideoKnowledge).filter(VideoKnowledge.material_id == material.id).one()
     assert context.course_type == "theory"
+    assert material.display_title == "v"
+
+
+def test_custom_video_title_persists_and_legacy_reupload_preserves_it(client, db_session):
+    def upload(filename, data=None):
+        return client.post("/api/admin/materials/upload",
+            params={"course_id": "stable-id", "file_type": "video"}, data=data,
+            files={"file": (filename, b"\x00\x00\x00\x18ftypmp42 rest", "video/mp4")}, headers=_h())
+    assert upload("004.Spring.mp4", {"display_title": "Spring 容器与组件"}).status_code == 200
+    assert upload("005.Renamed.mp4").status_code == 200
+    row = db_session.query(Material).filter_by(course_id="stable-id").one()
+    assert row.display_title == "Spring 容器与组件"
+    assert row.video_original_filename == "005.Renamed.mp4"
+    assert row.course_id == "stable-id"
+    assert client.get("/api/materials/stable-id", headers=_h()).json()["display_title"] == "Spring 容器与组件"
+    public_item = client.get("/api/materials", headers=_h()).json()[0]
+    assert public_item["display_title"] == public_item["title"] == "Spring 容器与组件"
+    assert upload("bad.mp4", {"display_title": " "}).status_code == 400
+    assert upload("bad.mp4", {"display_title": "x" * 257}).status_code == 400
+
+
+def test_legacy_title_fallback_does_not_write_history(client, db_session):
+    row = Material(course_id="internal-id", dir_path="unused", video_original_filename="004.Spring.mp4",
+                   courseware_text_cached="不应使用的课件标题")
+    db_session.add(row)
+    db_session.commit()
+    assert client.get("/api/materials/internal-id", headers=_h()).json()["display_title"] == "004.Spring"
+    assert client.get("/api/materials", headers=_h()).json()[0]["display_title"] == "004.Spring"
+    db_session.refresh(row)
+    assert row.display_title is None
+    row.video_original_filename = None
+    db_session.commit()
+    assert client.get("/api/materials/internal-id", headers=_h()).json()["display_title"] == "当前视频"
 
 
 def test_upload_video_can_select_practice_and_reject_path_course_id(client, db_session):

@@ -37,7 +37,7 @@ export default function CourseList() {
   return (
     <div style={{ minHeight: "100%", background: "var(--bg)" }}>
       <TopNav />
-      <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+      <div className="course-container">
         <Input.Search
           placeholder="搜索课程标题 / 描述 / course_id"
           allowClear

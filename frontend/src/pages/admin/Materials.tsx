@@ -92,6 +92,7 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
+  const lastAutoTitle = useRef("");
   const [fileList, setFileList] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -243,12 +244,13 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
     file: File,
     courseType: "theory" | "practice" = "theory",
     sourceId?: number,
+    displayTitle?: string,
   ) => {
     setUploading(true);
     setProgress(0);
     try {
       await adminMaterials.upload(
-        { courseId, fileType, file, courseType, sourceId, seriesId },
+        { courseId, fileType, file, courseType, sourceId, seriesId, displayTitle },
         (e) => {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
         },
@@ -266,13 +268,13 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
   };
 
   const doUpload = async () => {
-    const { course_id, file_type, course_type } = await uploadForm.validateFields();
+    const { course_id, file_type, course_type, display_title } = await uploadForm.validateFields();
     const file = fileList[0]?.originFileObj || fileList[0];
     if (!file) {
       message.warning("请选择文件");
       return;
     }
-    const ok = await uploadFile(course_id, file_type, file, course_type || "theory");
+    const ok = await uploadFile(course_id, file_type, file, course_type || "theory", undefined, display_title);
     if (ok) {
       closeUpload();
     }
@@ -283,12 +285,21 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
     setFileList([]);
     setProgress(0);
     uploadForm.resetFields();
+    lastAutoTitle.current = "";
   };
 
   const selectUploadFile = (nextFileList: any[]) => {
     const next = nextFileList.slice(-1);
     setFileList(next);
     const filename = next[0]?.originFileObj?.name || next[0]?.name;
+    if (filename) {
+      const currentTitle = String(uploadForm.getFieldValue("display_title") || "");
+      const nextTitle = filename.replace(/\.[^./\\]+$/, "");
+      if (!currentTitle.trim() || currentTitle === lastAutoTitle.current) {
+        uploadForm.setFieldValue("display_title", nextTitle);
+      }
+      lastAutoTitle.current = nextTitle;
+    }
     if (!String(uploadForm.getFieldValue("course_id") || "").trim() && filename) {
       uploadForm.setFieldValue("course_id", filename.replace(/\.[^./\\]+$/, ""));
     }
@@ -567,6 +578,9 @@ export default function Materials({ seriesId, onConfigureKnowledge }: MaterialsP
           </Form.Item>
           <Form.Item name="course_id" label="课程标识" rules={[{ required: true }]}>
             <Input placeholder="如 004.Spring - 容器和组件" />
+          </Form.Item>
+          <Form.Item name="display_title" label="视频标题" rules={[{ required: true, whitespace: true, max: 256 }]}>
+            <Input placeholder="根据文件名自动填写，可修改" maxLength={256} />
           </Form.Item>
           <Form.Item name="file_type" hidden><Input /></Form.Item>
           {uploadFileType === "video" && (

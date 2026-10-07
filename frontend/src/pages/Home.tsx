@@ -35,7 +35,7 @@ export default function Home() {
   return (
     <div style={{ minHeight: "100%", background: "var(--bg)" }}>
       <TopNav />
-      <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+      <div className="course-container">
         {/* Hero 横幅 */}
         <Card
           style={{

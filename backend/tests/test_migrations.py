@@ -31,7 +31,7 @@ CREATE TABLE materials (
 
 # 每次新增迁移都要往这里追加。用常量而不是散落在断言里的字面量，
 # 避免"加了一个迁移、两个测试各改一次"造成的漂移。
-EXPECTED_MIGRATIONS = ["materials.review_state"]
+EXPECTED_MIGRATIONS = ["materials.display_title", "materials.review_state"]
 
 
 _LEGACY_SERIES_SCHEMA = """
@@ -100,7 +100,7 @@ def test_drops_legacy_canceled_column_without_losing_rows():
         conn.execute(text("INSERT INTO materials VALUES (1, 'c1', 'pending', 0)"))
         conn.execute(text("INSERT INTO materials VALUES (2, 'c2', 'ready', 1)"))
 
-    assert run_migrations(engine) == ["materials.review_state", "materials.subtitle_canceled"]
+    assert run_migrations(engine) == [*EXPECTED_MIGRATIONS, "materials.subtitle_canceled"]
     assert "subtitle_canceled" not in _table_columns(engine, "materials")
     with engine.connect() as conn:
         rows = conn.execute(
@@ -118,7 +118,7 @@ def test_old_sqlite_skips_drop_column(monkeypatch):
         conn.execute(text(_LEGACY_CANCELED_MATERIALS))
     monkeypatch.setattr(migrations, "_sqlite_supports_drop_column", lambda _engine: False)
 
-    assert run_migrations(engine) == ["materials.review_state"]
+    assert run_migrations(engine) == EXPECTED_MIGRATIONS
     assert "subtitle_canceled" in _table_columns(engine, "materials")
 
 
